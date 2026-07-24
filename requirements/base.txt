@@ -1,0 +1,6 @@
+# Core runtime dependencies shared by every environment.
+# Phase 1 only needs config loading + structured logging support;
+# data/ML/streaming/serving dependencies are added in later phases.
+
+pyyaml==6.0.2
+python-json-logger==2.0.7

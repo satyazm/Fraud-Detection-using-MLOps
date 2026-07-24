@@ -1,0 +1,19 @@
+# Defaults shared by every environment. Environment-specific files
+# (dev.yaml, prod.yaml) are deep-merged on top of this by
+# fraud_detection.common.config.load_config().
+
+project:
+  name: fraud-detection-platform
+  version: "0.1.0"
+  description: "Real-time fraud detection MLOps platform (PaySim dataset)"
+
+paths:
+  data_raw: data/raw
+  data_processed: data/processed
+  data_sample: data/sample
+
+logging:
+  config_path: configs/logging.yaml
+  level: INFO
+
+debug: false

@@ -1,0 +1,8 @@
+# Overrides applied on top of base.yaml when APP_ENV=dev (the default).
+
+environment: development
+
+logging:
+  level: DEBUG
+
+debug: true

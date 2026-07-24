@@ -1,0 +1,8 @@
+# Overrides applied on top of base.yaml when APP_ENV=prod.
+
+environment: production
+
+logging:
+  level: INFO
+
+debug: false

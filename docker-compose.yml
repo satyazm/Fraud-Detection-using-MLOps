@@ -1,0 +1,83 @@
+# Local development infrastructure for the fraud detection platform.
+#
+# Nothing in this repo talks to these services yet (Phase 1 has no
+# streaming/serving code) — this file exists so the target topology is
+# visible early. Bring individual services up as later phases need them,
+# e.g.: `docker compose up kafka redis mlflow`.
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: fraud-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: fraud-detection-dev-cluster
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: fraud-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    container_name: fraud-mlflow
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: fraud-prometheus
+    ports:
+      - "9090:9090"
+    # Mount a scrape config once monitoring/ exposes metrics endpoints:
+    # volumes:
+    #   - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: fraud-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+  # api:
+  #   Uncomment once src/fraud_detection/serving/ exposes a FastAPI app.
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile.api
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     - redis
+  #     - mlflow
+
+volumes:
+  kafka-data:
+  redis-data:
+  mlflow-data:
+  grafana-data:

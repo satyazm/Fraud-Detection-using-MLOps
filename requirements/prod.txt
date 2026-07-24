@@ -1,0 +1,4 @@
+# Production runtime dependencies.
+# Identical to base for Phase 1; later phases will add serving/streaming
+# dependencies (e.g. FastAPI, Kafka client) here without touching dev tooling.
+-r base.txt
