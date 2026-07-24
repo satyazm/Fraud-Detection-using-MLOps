@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fraud-detection-platform/schemas/transaction.json",
+  "title": "Transaction",
+  "description": "Contract for a single mobile-money transaction event. Shared by the PaySim batch data, the future Kafka producer/consumer, and the FastAPI serving layer, so all three agree on one wire format. Mirrors fraud_detection.domain.entities.Transaction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "type",
+    "amount",
+    "nameOrig",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "nameDest",
+    "oldbalanceDest",
+    "newbalanceDest"
+  ],
+  "properties": {
+    "step": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Simulation time unit (1 step = 1 hour of PaySim simulated time)."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["CASH_IN", "CASH_OUT", "DEBIT", "PAYMENT", "TRANSFER"]
+    },
+    "amount": {
+      "type": "number",
+      "minimum": 0
+    },
+    "nameOrig": {
+      "type": "string",
+      "description": "Originating customer/merchant identifier."
+    },
+    "oldbalanceOrg": {
+      "type": "number",
+      "description": "Origin account balance before the transaction."
+    },
+    "newbalanceOrig": {
+      "type": "number",
+      "description": "Origin account balance after the transaction."
+    },
+    "nameDest": {
+      "type": "string",
+      "description": "Destination customer/merchant identifier."
+    },
+    "oldbalanceDest": {
+      "type": "number",
+      "description": "Destination account balance before the transaction."
+    },
+    "newbalanceDest": {
+      "type": "number",
+      "description": "Destination account balance after the transaction."
+    },
+    "isFraud": {
+      "type": "integer",
+      "enum": [0, 1],
+      "description": "Ground-truth label present in PaySim historical data; absent on live Kafka events, which is what the model exists to predict."
+    },
+    "isFlaggedFraud": {
+      "type": "integer",
+      "enum": [0, 1],
+      "default": 0,
+      "description": "PaySim's own rule-based flag for illegal attempts (large single transfers)."
+    }
+  }
+}

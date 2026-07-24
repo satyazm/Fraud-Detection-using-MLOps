@@ -15,6 +15,7 @@ layer's interface:
 
 | Package     | Responsibility                                            |
 |-------------|------------------------------------------------------------|
+| `domain`    | Business entities (`Transaction`, `Prediction`, `FraudDecision`) and domain exceptions — depends on nothing else in this package |
 | `common`    | Config loading, logging — no dependency on any other layer |
 | `data`      | Ingestion, validation, schemas for the PaySim dataset       |
 | `features`  | Feature engineering, shared between training and serving   |
@@ -24,9 +25,15 @@ layer's interface:
 | `monitoring`| Data/model drift and performance observability              |
 | `utils`     | Generic, dependency-free helpers                            |
 
-Dependency direction runs one way: `serving`/`streaming`/`monitoring`
-depend on `models` and `features`, which depend on `data` and `common` —
-never the reverse.
+Dependency direction runs one way, inward toward `domain`:
+`serving`/`streaming`/`monitoring` depend on `models` and `features`,
+which depend on `data`, `domain`, and `common` — never the reverse.
+Boundary layers (`streaming`, `serving`) translate wire formats (Kafka
+JSON, HTTP bodies) into `domain` entities via `domain.schemas`, so
+`models`/`features` work with typed entities, not raw dicts. The wire
+contract itself is versioned in `data/contracts/transaction_schema.json`.
+See ADR-0002 (`docs/decisions/0002-clean-architecture-layering.md`) for
+the full rationale.
 
 ## Target end-to-end flow
 

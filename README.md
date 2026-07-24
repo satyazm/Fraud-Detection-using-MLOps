@@ -16,6 +16,7 @@ data/
   raw/                Original, immutable source data (gitignored contents)
   processed/          Cleaned/transformed data (gitignored contents)
   sample/             Small samples for tests/local dev (gitignored contents)
+  contracts/          Versioned wire-format contracts (e.g. transaction_schema.json)
 src/fraud_detection/  Installable package (see Package layout below)
 tests/                Pytest test suite (mirrors src/fraud_detection layout)
 docs/
@@ -38,6 +39,7 @@ rules between layers):
 
 ```
 fraud_detection/
+  domain/        Business entities (Transaction, Prediction, FraudDecision) — depends on nothing else
   common/        Config loading, logging (implemented)
   cli.py         `fraud-detection` command-line entry point (placeholders)
   data/          Data ingestion & validation (Phase 2+)
