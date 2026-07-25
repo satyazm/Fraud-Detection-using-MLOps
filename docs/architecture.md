@@ -2,12 +2,13 @@
 
 ## Status
 
-Milestones 1-4 are implemented: `common`, `domain`, `data`, `features`,
-`models`, and `streaming` (producer/consumer; no inference in the
-stream yet) are real. `serving` and `monitoring` are still scaffolding
-— this document records intent for them so those milestones have a
-target to build toward, and so deviations get captured as ADRs (see
-`docs/decisions/`).
+Milestones 1-5 are implemented: `common`, `domain`, `data`, `features`
+(including a real Feast + Redis integration), `models`, and `streaming`
+(Kafka producer/consumer, plus a real PyFlink job computing features
+from the live stream — no model inference in the stream yet) are real.
+`serving` and `monitoring` are still scaffolding — this document
+records intent for them so those milestones have a target to build
+toward, and so deviations get captured as ADRs (see `docs/decisions/`).
 
 ## Layering (clean architecture)
 
@@ -20,9 +21,9 @@ layer's interface:
 | `domain`    | Business entities (`Transaction`, `Prediction`, `FraudDecision`) and domain exceptions — depends on nothing else in this package |
 | `common`    | Config loading, logging — no dependency on any other layer |
 | `data`      | Ingestion, validation, preprocessing, splitting for the PaySim dataset |
-| `features`  | One feature pipeline shared by offline training, online inference, and future streaming (ADR-0003) |
+| `features`  | One feature pipeline shared by offline training, online inference, and streaming (ADR-0003); Feast + Redis integration (ADR-0006) |
 | `models`    | Training, comparison, evaluation, MLflow tracking/registry |
-| `streaming` | Kafka producer/consumer, sharing `domain.entities.Transaction` as the wire schema (ADR-0005) |
+| `streaming` | Kafka producer/consumer sharing `domain.entities.Transaction` as the wire schema (ADR-0005); a PyFlink job computing features from the live stream via the same `FeaturePipeline` (ADR-0006) |
 | `serving`   | Inference API (FastAPI) that scores transactions            |
 | `monitoring`| Data/model drift and performance observability              |
 | `utils`     | Generic, dependency-free helpers                            |
@@ -46,24 +47,29 @@ PaySim dataset
   data (ingest/validate)
       |
       v
-  features (engineer)
-      |
+  features (engineer)  ---------------------------+
+      |                                            |
+      v                                            v
+  models (train, evaluate)              feast_prep / feast materialize
+      |  --> MLflow (tracking + registry)          |
+      v                                            v
+  [ once a baseline model is validated ]         Redis (Feast online store)
+      |                                            ^
+      v                                            |
+  streaming: producer -> Kafka -> flink-worker -----+
+      |         (FeaturePipeline.transform_one() -> Feast push)
       v
-  models (train, evaluate) --> MLflow (tracking + registry)
-      |
-      v
-  [ once a baseline model is validated ]
-      |
-      v
-  streaming (Kafka producer/consumer) --> serving (FastAPI inference)
+  serving (FastAPI: Feast lookup -> model.predict_proba())
       |
       v
   monitoring (drift, performance, alerting) --> Prometheus/Grafana
 ```
 
-The model is proven offline first (Phase 2). Streaming and serving
-infrastructure (Phases 4-5) wrap the validated model rather than the
-other way around — see ADR-0001 for how decisions like this are tracked.
+The model is proven offline first (Milestones 2-3). The real-time
+feature platform (Milestone 5) proves Kafka -> features -> online store
+parity *before* wiring a model into that path — see ADR-0001 for how
+decisions like this are tracked, and ADR-0006 for Milestone 5's
+specifics (Feast, Redis, why local-execution PyFlink).
 
 ## Configuration & logging
 
@@ -76,5 +82,6 @@ other way around — see ADR-0001 for how decisions like this are tracked.
 ## Local infrastructure
 
 `docker-compose.yml` at the repo root defines the target local stack.
-Kafka (+ Kafka UI) is live and used by `streaming/`. Redis, MLflow,
-Prometheus, and Grafana remain scaffolding for later milestones.
+Kafka (+ Kafka UI) and Redis are live, used by `streaming/` and
+`features/`'s Feast integration respectively. MLflow, Prometheus, and
+Grafana remain scaffolding for later milestones.

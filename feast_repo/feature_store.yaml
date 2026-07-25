@@ -1,0 +1,12 @@
+# Feast project config. Registered/materialized via `fraud-detection
+# feast-apply` / `fraud-detection materialize` (see
+# src/fraud_detection/features/feast_store.py), not by hand.
+project: fraud_detection
+provider: local
+registry: registry.db
+online_store:
+  type: redis
+  connection_string: "localhost:6379"
+offline_store:
+  type: file
+entity_key_serialization_version: 3

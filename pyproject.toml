@@ -88,5 +88,8 @@ module = [
     "lightgbm.*",
     "mlflow.*",
     "confluent_kafka.*",
+    "feast.*",
+    "pyflink.*",
+    "redis.*",
 ]
 ignore_missing_imports = true

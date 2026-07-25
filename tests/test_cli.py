@@ -1,11 +1,13 @@
 """Tests for the CLI: placeholder subcommands and the data/model/streaming pipeline."""
 
+import shutil
 import socket
 import uuid
 
 import pytest
 
 from fraud_detection.cli import main
+from fraud_detection.streaming.flink_job import DEFAULT_KAFKA_CONNECTOR_JAR
 
 
 def _kafka_reachable() -> bool:
@@ -16,9 +18,35 @@ def _kafka_reachable() -> bool:
         return False
 
 
+def _redis_reachable() -> bool:
+    try:
+        with socket.create_connection(("localhost", 6379), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
 requires_kafka = pytest.mark.skipif(
     not _kafka_reachable(),
     reason="Kafka not reachable at localhost:9092 (run `docker compose up kafka`)",
+)
+
+requires_redis = pytest.mark.skipif(
+    not _redis_reachable(),
+    reason="Redis not reachable at localhost:6379 (run `docker compose up redis`)",
+)
+
+requires_flink_stack = pytest.mark.skipif(
+    not (
+        _kafka_reachable()
+        and _redis_reachable()
+        and shutil.which("java") is not None
+        and DEFAULT_KAFKA_CONNECTOR_JAR.exists()
+    ),
+    reason=(
+        "Needs Kafka + Redis + a JVM + the Flink Kafka connector JAR "
+        "(`docker compose up kafka redis`, JAVA_HOME set, `make flink-jar`)"
+    ),
 )
 
 
@@ -206,3 +234,74 @@ def test_producer_then_consumer_commands_end_to_end(tmp_path, sample_transaction
         ]
     )
     assert consumer_exit == 0
+
+
+@requires_redis
+def test_feast_apply_command():
+    from fraud_detection.features.feast_ops import DEFAULT_FEAST_REPO_PATH
+
+    assert main(["feast-apply", "--repo-path", str(DEFAULT_FEAST_REPO_PATH)]) == 0
+
+
+@requires_redis
+def test_materialize_command_builds_offline_source_and_registers(sample_transactions_df, tmp_path):
+    from fraud_detection.features.feast_ops import DEFAULT_FEAST_REPO_PATH
+    from fraud_detection.features.feast_prep import DEFAULT_OFFLINE_SOURCE_PATH
+
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+
+    exit_code = main(
+        [
+            "materialize",
+            "--raw-path",
+            str(csv_path),
+            "--repo-path",
+            str(DEFAULT_FEAST_REPO_PATH),
+            "--sample-size",
+            str(len(sample_transactions_df)),
+        ]
+    )
+
+    assert exit_code == 0
+    assert DEFAULT_OFFLINE_SOURCE_PATH.exists()
+
+
+@requires_flink_stack
+def test_flink_worker_command_end_to_end(sample_transactions_df, tmp_path):
+    from fraud_detection.features.feast_ops import DEFAULT_FEAST_REPO_PATH, apply_feast_definitions
+
+    apply_feast_definitions(DEFAULT_FEAST_REPO_PATH)
+
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+    topic = f"cli-test-flink-{uuid.uuid4().hex[:8]}"
+
+    producer_exit = main(
+        [
+            "producer",
+            "--raw-path",
+            str(csv_path),
+            "--topic",
+            topic,
+            "--rate",
+            "0",
+            "--limit",
+            "10",
+        ]
+    )
+    assert producer_exit == 0
+
+    flink_exit = main(
+        [
+            "flink-worker",
+            "--topic",
+            topic,
+            "--group-id",
+            f"cli-test-flink-group-{uuid.uuid4().hex[:8]}",
+            "--repo-path",
+            str(DEFAULT_FEAST_REPO_PATH),
+            "--bounded",
+        ]
+    )
+    assert flink_exit == 0

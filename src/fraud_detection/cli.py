@@ -3,9 +3,12 @@
 `ingest`/`validate`/`preprocess` run the data pipeline (Milestone 2).
 `train`/`evaluate` run model training/evaluation with MLflow tracking
 (Milestone 3). `producer`/`consumer` stream/log PaySim transactions via
-Kafka (Milestone 4; no inference yet). `api` remains a placeholder —
-it logs which later milestone implements it — so the full operational
-surface is visible early.
+Kafka (Milestone 4; no inference yet). `feast-apply`/`materialize`/
+`flink-worker` run the real-time feature platform (Milestone 5):
+register Feast definitions, push offline features into Redis, and run
+the PyFlink job that computes features from the live Kafka stream.
+`api` remains a placeholder — it logs which later milestone implements
+it — so the full operational surface is visible early.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable, Sequence
+from datetime import timedelta
 from pathlib import Path
 
 import mlflow.sklearn
@@ -30,6 +34,17 @@ from fraud_detection.data.reporting import (
 )
 from fraud_detection.data.split import stratified_split
 from fraud_detection.data.validation import assert_trainable, run_data_quality_checks
+from fraud_detection.features.feast_ops import (
+    DEFAULT_FEAST_REPO_PATH,
+    FeastOperationError,
+    apply_feast_definitions,
+    materialize_feast_features,
+)
+from fraud_detection.features.feast_prep import (
+    DEFAULT_BASE_TIMESTAMP,
+    DEFAULT_OFFLINE_SOURCE_PATH,
+    build_offline_source,
+)
 from fraud_detection.features.feature_pipeline import DEFAULT_FEATURE_PIPELINE
 from fraud_detection.features.registry import feature_version as compute_feature_version
 from fraud_detection.models.dataset import DEFAULT_PROCESSED_DIR, load_dataset
@@ -55,6 +70,13 @@ from fraud_detection.models.training import (
 from fraud_detection.streaming.consumer import (
     DEFAULT_GROUP_ID,
     consume_transactions,
+)
+from fraud_detection.streaming.flink_job import (
+    DEFAULT_GROUP_ID as DEFAULT_FLINK_GROUP_ID,
+)
+from fraud_detection.streaming.flink_job import (
+    DEFAULT_KAFKA_CONNECTOR_JAR,
+    run_flink_worker,
 )
 from fraud_detection.streaming.producer import (
     DEFAULT_BOOTSTRAP_SERVERS,
@@ -236,6 +258,80 @@ def _cmd_consumer(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_feast_apply(args: argparse.Namespace) -> int:
+    try:
+        apply_feast_definitions(args.repo_path)
+    except FeastOperationError as exc:
+        logger.error("feast apply failed", extra={"error": str(exc)})
+        return 1
+
+    logger.info("feast apply complete", extra={"repo_path": str(args.repo_path)})
+    return 0
+
+
+def _cmd_materialize(args: argparse.Namespace) -> int:
+    try:
+        df = load_paysim_csv(args.raw_path)
+    except DataError as exc:
+        logger.error("ingestion failed", extra={"error": str(exc)})
+        return 1
+
+    sample = df.head(args.sample_size)
+    featurized = DEFAULT_FEATURE_PIPELINE.transform(sample)
+    # Always DEFAULT_OFFLINE_SOURCE_PATH, matching the fixed FileSource
+    # path feast_repo/definitions.py registers — `feast materialize`
+    # always reads from there, so this can't be independently overridden
+    # via a CLI flag without the two silently going out of sync.
+    offline_path = build_offline_source(featurized, output_path=DEFAULT_OFFLINE_SOURCE_PATH)
+
+    try:
+        apply_feast_definitions(args.repo_path)
+    except FeastOperationError as exc:
+        logger.error("feast apply failed", extra={"error": str(exc)})
+        return 1
+
+    start = DEFAULT_BASE_TIMESTAMP
+    end = start + timedelta(hours=int(sample["step"].max()) + 1)
+    try:
+        materialize_feast_features(start, end, args.repo_path)
+    except FeastOperationError as exc:
+        logger.error("feast materialize failed", extra={"error": str(exc)})
+        return 1
+
+    logger.info(
+        "materialize complete",
+        extra={
+            "offline_source_path": str(offline_path),
+            "rows": len(sample),
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+        },
+    )
+    return 0
+
+
+def _cmd_flink_worker(args: argparse.Namespace) -> int:
+    try:
+        run_flink_worker(
+            topic=args.topic,
+            bootstrap_servers=args.bootstrap_servers,
+            group_id=args.group_id,
+            repo_path=args.repo_path,
+            # Not CLI-overridable: unused by the online push path
+            # (write_online never reads it), and if it *were* used it
+            # would face the same fixed-FileSource issue materialize
+            # has — see the comment in _cmd_materialize.
+            offline_source_path=DEFAULT_OFFLINE_SOURCE_PATH,
+            kafka_connector_jar=args.kafka_connector_jar,
+            bounded=args.bounded,
+        )
+    except (FileNotFoundError, RuntimeError) as exc:
+        logger.error("flink worker failed", extra={"error": str(exc)})
+        return 1
+
+    return 0
+
+
 def _run_placeholder(command: str) -> int:
     logger.info(
         "command not yet implemented",
@@ -328,6 +424,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop after N messages; omit to run until interrupted",
     )
     consumer_parser.set_defaults(func=_cmd_consumer)
+
+    feast_apply_parser = subparsers.add_parser(
+        "feast-apply", help="Register Feast entity/feature-view definitions (`feast apply`)"
+    )
+    feast_apply_parser.add_argument("--repo-path", type=Path, default=DEFAULT_FEAST_REPO_PATH)
+    feast_apply_parser.set_defaults(func=_cmd_feast_apply)
+
+    materialize_parser = subparsers.add_parser(
+        "materialize",
+        help="Build the offline feature source and materialize it into Redis via Feast",
+    )
+    materialize_parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
+    materialize_parser.add_argument("--repo-path", type=Path, default=DEFAULT_FEAST_REPO_PATH)
+    materialize_parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=2000,
+        help="Rows to feature-engineer and materialize (file offline store is dev-scale)",
+    )
+    materialize_parser.set_defaults(func=_cmd_materialize)
+
+    flink_worker_parser = subparsers.add_parser(
+        "flink-worker",
+        help="Kafka -> FeaturePipeline.transform_one() -> Feast/Redis (PyFlink streaming job)",
+    )
+    flink_worker_parser.add_argument("--topic", type=str, default=DEFAULT_TOPIC)
+    flink_worker_parser.add_argument(
+        "--bootstrap-servers", type=str, default=DEFAULT_BOOTSTRAP_SERVERS
+    )
+    flink_worker_parser.add_argument("--group-id", type=str, default=DEFAULT_FLINK_GROUP_ID)
+    flink_worker_parser.add_argument("--repo-path", type=Path, default=DEFAULT_FEAST_REPO_PATH)
+    flink_worker_parser.add_argument(
+        "--kafka-connector-jar", type=Path, default=DEFAULT_KAFKA_CONNECTOR_JAR
+    )
+    flink_worker_parser.add_argument(
+        "--bounded",
+        action="store_true",
+        help="Stop at the latest offset when the job starts, instead of streaming forever",
+    )
+    flink_worker_parser.set_defaults(func=_cmd_flink_worker)
 
     for name, planned_in in _PLACEHOLDER_PLANNED_IN.items():
         placeholder_parser = subparsers.add_parser(

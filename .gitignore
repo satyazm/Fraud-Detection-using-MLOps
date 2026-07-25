@@ -41,9 +41,18 @@ Thumbs.db
 data/raw/*
 data/processed/*
 data/sample/*
+data/feast/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/sample/.gitkeep
+!data/feast/.gitkeep
+
+# --- Flink (downloaded JARs, not vendored) ---
+.flink-jars/
+
+# --- Feast (generated registry) ---
+feast_repo/registry.db
+feast_repo/.feast_registry_lock
 
 # --- ML / experiment artifacts (for later phases) ---
 mlruns/

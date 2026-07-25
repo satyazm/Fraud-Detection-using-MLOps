@@ -1,9 +1,9 @@
 # Local development infrastructure for the fraud detection platform.
 #
-# kafka + kafka-ui are live (Milestone 4: streaming). redis/mlflow/
-# prometheus/grafana remain scaffolding for later milestones. Bring
-# individual services up as needed, e.g.: `docker compose up kafka
-# kafka-ui`.
+# kafka + kafka-ui (Milestone 4) and redis (Milestone 5, as Feast's
+# online store) are live. mlflow/prometheus/grafana remain scaffolding
+# for later milestones. Bring individual services up as needed, e.g.:
+# `docker compose up kafka kafka-ui redis`, or `make infra-up`.
 
 services:
   # Single-node KRaft (no ZooKeeper) broker. Two listeners on purpose:
@@ -58,6 +58,8 @@ services:
       kafka:
         condition: service_healthy
 
+  # Feast's online store (Milestone 5) — real-time feature values pushed
+  # by the streaming worker, and by `feast materialize`, land here.
   redis:
     image: redis:7-alpine
     container_name: fraud-redis
@@ -65,6 +67,12 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2
