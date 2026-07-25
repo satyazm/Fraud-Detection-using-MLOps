@@ -17,8 +17,8 @@ layer's interface:
 |-------------|------------------------------------------------------------|
 | `domain`    | Business entities (`Transaction`, `Prediction`, `FraudDecision`) and domain exceptions — depends on nothing else in this package |
 | `common`    | Config loading, logging — no dependency on any other layer |
-| `data`      | Ingestion, validation, schemas for the PaySim dataset       |
-| `features`  | Feature engineering, shared between training and serving   |
+| `data`      | Ingestion, validation, preprocessing, splitting for the PaySim dataset |
+| `features`  | One feature pipeline shared by offline training, online inference, and future streaming (ADR-0003) |
 | `models`    | Training, evaluation, model registry integration           |
 | `streaming` | Kafka producers/consumers for real-time transaction events |
 | `serving`   | Inference API (FastAPI) that scores transactions            |
