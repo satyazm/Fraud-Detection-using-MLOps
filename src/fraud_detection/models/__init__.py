@@ -1,1 +1,1 @@
-"""Model training and inference layer (implemented in a later phase)."""
+"""Model training, evaluation, and MLflow registry integration."""

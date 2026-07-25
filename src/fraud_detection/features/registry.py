@@ -12,6 +12,7 @@ docs/decisions/0003-shared-feature-pipeline.md.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import pandas as pd
@@ -109,3 +110,15 @@ def validate_features_present(df: pd.DataFrame) -> None:
     missing = [name for name in feature_names() if name not in df.columns]
     if missing:
         raise FeatureRegistryError(f"Pipeline output is missing registered features: {missing}")
+
+
+def feature_version() -> str:
+    """Stable short hash identifying the current set of registered features.
+
+    Changes whenever a feature is added, removed, or redefined (name,
+    dtype, or source columns change). Logged alongside every MLflow
+    training run so a run can always be traced back to the feature
+    definitions that produced its training data.
+    """
+    payload = "|".join(f"{d.name}:{d.dtype}:{','.join(d.source_columns)}" for d in FEATURE_REGISTRY)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]

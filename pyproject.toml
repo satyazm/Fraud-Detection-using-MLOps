@@ -79,5 +79,13 @@ warn_unused_configs = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["pythonjsonlogger.*", "sklearn.*", "matplotlib.*", "pyarrow.*"]
+module = [
+    "pythonjsonlogger.*",
+    "sklearn.*",
+    "matplotlib.*",
+    "pyarrow.*",
+    "xgboost.*",
+    "lightgbm.*",
+    "mlflow.*",
+]
 ignore_missing_imports = true

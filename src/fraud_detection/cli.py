@@ -1,9 +1,10 @@
 """Command-line entry point for the fraud detection platform.
 
-`ingest`/`validate`/`preprocess` run the real Phase 2 data pipeline.
-`train`/`producer`/`consumer`/`api` remain placeholders — each logs
-which later phase implements it — so the full operational surface is
-visible early.
+`ingest`/`validate`/`preprocess` run the data pipeline (Milestone 2).
+`train`/`evaluate` run model training/evaluation with MLflow tracking
+(Milestone 3). `producer`/`consumer`/`api` remain placeholders — each
+logs which later milestone implements it — so the full operational
+surface is visible early.
 """
 
 from __future__ import annotations
@@ -13,7 +14,9 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from fraud_detection.common.config import PROJECT_ROOT
+import mlflow.sklearn
+from mlflow.exceptions import MlflowException
+
 from fraud_detection.common.logger import get_logger
 from fraud_detection.data.exceptions import DataError
 from fraud_detection.data.ingestion import DEFAULT_RAW_PATH, load_paysim_csv
@@ -26,16 +29,35 @@ from fraud_detection.data.reporting import (
 )
 from fraud_detection.data.split import stratified_split
 from fraud_detection.data.validation import assert_trainable, run_data_quality_checks
+from fraud_detection.features.feature_pipeline import DEFAULT_FEATURE_PIPELINE
+from fraud_detection.features.registry import feature_version as compute_feature_version
+from fraud_detection.models.dataset import DEFAULT_PROCESSED_DIR, load_dataset
+from fraud_detection.models.evaluation import evaluate_predictions
+from fraud_detection.models.exceptions import ModelError
+from fraud_detection.models.model_registry import (
+    DEFAULT_MODEL_NAME,
+    register_model,
+    resolve_latest_model_uri,
+)
+from fraud_detection.models.reporting import (
+    DEFAULT_MODEL_REPORT_PATH,
+    plot_model_comparison,
+    render_model_report,
+)
+from fraud_detection.models.training import (
+    DEFAULT_EXPERIMENT_NAME,
+    DEFAULT_TRACKING_URI,
+    get_git_commit_hash,
+    select_best_run,
+    train_and_compare,
+)
 
 logger = get_logger("fraud_detection.cli")
 
-DEFAULT_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-
 _PLACEHOLDER_PLANNED_IN = {
-    "train": "Phase 3 (Feature Engineering & Baseline Model)",
-    "producer": "Phase 4 (Kafka Streaming)",
-    "consumer": "Phase 4 (Kafka Streaming)",
-    "api": "Phase 6 (FastAPI Serving)",
+    "producer": "Milestone 4 (Kafka Streaming)",
+    "consumer": "Milestone 4 (Kafka Streaming)",
+    "api": "Milestone 6 (FastAPI Serving)",
 }
 
 
@@ -86,7 +108,11 @@ def _cmd_preprocess(args: argparse.Namespace) -> int:
         logger.error("dataset failed trainability check", extra={"error": str(exc)})
         return 1
 
-    processed_df = preprocess(df)
+    # Feature engineering runs before preprocessing: some features (e.g.
+    # is_dest_merchant) read nameDest, which preprocess() drops. See
+    # docs/decisions/0003-shared-feature-pipeline.md.
+    featurized_df = DEFAULT_FEATURE_PIPELINE.transform(df)
+    processed_df = preprocess(featurized_df)
     split = stratified_split(processed_df)
 
     output_dir = Path(args.output_dir)
@@ -99,6 +125,82 @@ def _cmd_preprocess(args: argparse.Namespace) -> int:
             extra={"split": split_name, "rows": len(subset), "path": str(split_path)},
         )
 
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    try:
+        dataset = load_dataset(args.processed_dir)
+    except ModelError as exc:
+        logger.error("failed to load dataset", extra={"error": str(exc)})
+        return 1
+
+    results = train_and_compare(
+        dataset,
+        tracking_uri=args.tracking_uri,
+        experiment_name=args.experiment_name,
+    )
+    best = select_best_run(results)
+
+    try:
+        version = register_model(best.run_id, model_name=args.registry_name)
+    except MlflowException as exc:
+        logger.error("failed to register best model", extra={"error": str(exc)})
+        return 1
+
+    plot_model_comparison(results, output_path=args.images_dir / "model_comparison.png")
+    report_path = render_model_report(
+        results,
+        best,
+        feature_version=compute_feature_version(),
+        git_commit=get_git_commit_hash(),
+        registered_model_name=args.registry_name,
+        registered_model_version=str(version.version),
+        output_path=args.report_path,
+    )
+
+    logger.info(
+        "training complete",
+        extra={
+            "best_model": best.model_name,
+            "registered_version": version.version,
+            "report_path": str(report_path),
+        },
+    )
+    return 0
+
+
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    try:
+        dataset = load_dataset(args.processed_dir)
+    except ModelError as exc:
+        logger.error("failed to load dataset", extra={"error": str(exc)})
+        return 1
+
+    mlflow.set_tracking_uri(args.tracking_uri)
+
+    model_uri = args.model_uri
+    if model_uri is None:
+        try:
+            model_uri = resolve_latest_model_uri(args.registry_name)
+        except ModelError as exc:
+            logger.error("failed to resolve model uri", extra={"error": str(exc)})
+            return 1
+
+    try:
+        model = mlflow.sklearn.load_model(model_uri)
+    except (MlflowException, OSError) as exc:
+        logger.error("failed to load model", extra={"model_uri": model_uri, "error": str(exc)})
+        return 1
+
+    predictions = model.predict(dataset.x_test)
+    probabilities = model.predict_proba(dataset.x_test)[:, 1]
+    metrics = evaluate_predictions(dataset.y_test, predictions, probabilities)
+
+    logger.info(
+        "evaluation complete",
+        extra={"model_uri": model_uri, **metrics.as_metrics_dict()},
+    )
     return 0
 
 
@@ -136,11 +238,36 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.set_defaults(func=_cmd_validate)
 
     preprocess_parser = subparsers.add_parser(
-        "preprocess", help="Preprocess, stratified-split, and save the dataset"
+        "preprocess", help="Feature-engineer, clean, stratified-split, and save the dataset"
     )
     preprocess_parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
     preprocess_parser.add_argument("--output-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
     preprocess_parser.set_defaults(func=_cmd_preprocess)
+
+    train_parser = subparsers.add_parser(
+        "train", help="Train and compare candidate models, log to MLflow, register the best"
+    )
+    train_parser.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
+    train_parser.add_argument("--tracking-uri", type=str, default=DEFAULT_TRACKING_URI)
+    train_parser.add_argument("--experiment-name", type=str, default=DEFAULT_EXPERIMENT_NAME)
+    train_parser.add_argument("--registry-name", type=str, default=DEFAULT_MODEL_NAME)
+    train_parser.add_argument("--report-path", type=Path, default=DEFAULT_MODEL_REPORT_PATH)
+    train_parser.add_argument("--images-dir", type=Path, default=DEFAULT_IMAGES_DIR)
+    train_parser.set_defaults(func=_cmd_train)
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate", help="Evaluate a registered (or explicit) model against the test split"
+    )
+    evaluate_parser.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
+    evaluate_parser.add_argument("--tracking-uri", type=str, default=DEFAULT_TRACKING_URI)
+    evaluate_parser.add_argument("--registry-name", type=str, default=DEFAULT_MODEL_NAME)
+    evaluate_parser.add_argument(
+        "--model-uri",
+        type=str,
+        default=None,
+        help="Explicit MLflow model URI; defaults to the latest registered version",
+    )
+    evaluate_parser.set_defaults(func=_cmd_evaluate)
 
     for name, planned_in in _PLACEHOLDER_PLANNED_IN.items():
         placeholder_parser = subparsers.add_parser(

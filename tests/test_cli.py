@@ -5,7 +5,7 @@ import pytest
 from fraud_detection.cli import main
 
 
-@pytest.mark.parametrize("command", ["train", "producer", "consumer", "api"])
+@pytest.mark.parametrize("command", ["producer", "consumer", "api"])
 def test_placeholder_commands_exit_cleanly(command):
     assert main([command]) == 0
 
@@ -81,5 +81,77 @@ def test_preprocess_command_fails_when_no_fraud_present(tmp_path, sample_transac
     no_fraud.to_csv(csv_path, index=False)
 
     exit_code = main(["preprocess", "--raw-path", str(csv_path), "--output-dir", str(tmp_path)])
+
+    assert exit_code == 1
+
+
+def test_train_then_evaluate_end_to_end(tmp_path, sample_transactions_df):
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+    processed_dir = tmp_path / "processed"
+    tracking_uri = f"file:{tmp_path / 'mlruns'}"
+    report_path = tmp_path / "model_report.md"
+    images_dir = tmp_path / "images"
+
+    preprocess_exit = main(
+        ["preprocess", "--raw-path", str(csv_path), "--output-dir", str(processed_dir)]
+    )
+    assert preprocess_exit == 0
+
+    train_exit = main(
+        [
+            "train",
+            "--processed-dir",
+            str(processed_dir),
+            "--tracking-uri",
+            tracking_uri,
+            "--experiment-name",
+            "cli-test",
+            "--registry-name",
+            "cli-test-model",
+            "--report-path",
+            str(report_path),
+            "--images-dir",
+            str(images_dir),
+        ]
+    )
+    assert train_exit == 0
+    assert report_path.exists()
+    assert "Best model" in report_path.read_text()
+    assert (images_dir / "model_comparison.png").exists()
+
+    evaluate_exit = main(
+        [
+            "evaluate",
+            "--processed-dir",
+            str(processed_dir),
+            "--tracking-uri",
+            tracking_uri,
+            "--registry-name",
+            "cli-test-model",
+        ]
+    )
+    assert evaluate_exit == 0
+
+
+def test_evaluate_command_fails_when_nothing_registered(tmp_path, sample_transactions_df):
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+    processed_dir = tmp_path / "processed"
+    tracking_uri = f"file:{tmp_path / 'mlruns'}"
+
+    main(["preprocess", "--raw-path", str(csv_path), "--output-dir", str(processed_dir)])
+
+    exit_code = main(
+        [
+            "evaluate",
+            "--processed-dir",
+            str(processed_dir),
+            "--tracking-uri",
+            tracking_uri,
+            "--registry-name",
+            "no-such-model",
+        ]
+    )
 
     assert exit_code == 1

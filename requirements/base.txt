@@ -9,3 +9,8 @@ numpy==1.26.4
 scikit-learn==1.5.2
 matplotlib==3.9.2
 pyarrow==17.0.0
+
+# Milestone 3: model training, comparison, MLflow tracking/registry.
+xgboost==2.1.1
+lightgbm==4.5.0
+mlflow==2.17.2
