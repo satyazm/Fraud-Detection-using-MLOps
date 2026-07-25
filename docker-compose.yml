@@ -1,11 +1,16 @@
 # Local development infrastructure for the fraud detection platform.
 #
-# Nothing in this repo talks to these services yet (Phase 1 has no
-# streaming/serving code) — this file exists so the target topology is
-# visible early. Bring individual services up as later phases need them,
-# e.g.: `docker compose up kafka redis mlflow`.
+# kafka + kafka-ui are live (Milestone 4: streaming). redis/mlflow/
+# prometheus/grafana remain scaffolding for later milestones. Bring
+# individual services up as needed, e.g.: `docker compose up kafka
+# kafka-ui`.
 
 services:
+  # Single-node KRaft (no ZooKeeper) broker. Two listeners on purpose:
+  # PLAINTEXT (localhost:9092) is what host-side Python (the CLI
+  # producer/consumer) connects to; PLAINTEXT_INTERNAL (kafka:29092) is
+  # what other containers on this compose network (kafka-ui) must use —
+  # "localhost" inside a container means that container, not the host.
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     container_name: fraud-kafka
@@ -14,15 +19,44 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      CLUSTER_ID: fraud-detection-dev-cluster
+      # Must be a base64-encoded UUID (KRaft requirement, not an arbitrary
+      # string) — generated once with:
+      #   python3 -c "import uuid, base64; print(base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip('='))"
+      CLUSTER_ID: Ufqe12OUTAeHv8Nk-4ERyQ
+      # Defaults (replication factor 3) can never be satisfied by a
+      # single-broker cluster: __consumer_offsets never gets created,
+      # every consumer group's FindCoordinator request fails forever
+      # with COORDINATOR_NOT_AVAILABLE, and every consumer silently
+      # never receives a message. Single-node dev cluster -> factor 1.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
     volumes:
       - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: fraud-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine

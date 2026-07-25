@@ -1,4 +1,4 @@
-.PHONY: install install-dev lint format typecheck test precommit clean ingest validate preprocess train evaluate producer consumer api
+.PHONY: install install-dev lint format typecheck test precommit clean ingest validate preprocess train evaluate kafka-up kafka-down producer consumer api
 
 PYTHON := python3.11
 
@@ -48,12 +48,19 @@ train:
 evaluate:
 	fraud-detection evaluate
 
-# --- Placeholder operational commands (wired up to real logic in later milestones) ---
+# --- Milestone 4: Kafka streaming ---
+kafka-up:
+	docker compose up -d kafka kafka-ui
+
+kafka-down:
+	docker compose down kafka kafka-ui
+
 producer:
 	fraud-detection producer
 
 consumer:
 	fraud-detection consumer
 
+# --- Placeholder operational commands (wired up to real logic in later milestones) ---
 api:
 	fraud-detection api

@@ -1,1 +1,1 @@
-"""Real-time streaming (e.g. Kafka) layer (implemented in a later phase)."""
+"""Kafka producer/consumer for real-time transaction events."""

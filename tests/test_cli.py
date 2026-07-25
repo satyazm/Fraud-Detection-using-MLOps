@@ -1,13 +1,29 @@
-"""Tests for the CLI: placeholder subcommands and the Phase 2 data pipeline."""
+"""Tests for the CLI: placeholder subcommands and the data/model/streaming pipeline."""
+
+import socket
+import uuid
 
 import pytest
 
 from fraud_detection.cli import main
 
 
-@pytest.mark.parametrize("command", ["producer", "consumer", "api"])
-def test_placeholder_commands_exit_cleanly(command):
-    assert main([command]) == 0
+def _kafka_reachable() -> bool:
+    try:
+        with socket.create_connection(("localhost", 9092), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+requires_kafka = pytest.mark.skipif(
+    not _kafka_reachable(),
+    reason="Kafka not reachable at localhost:9092 (run `docker compose up kafka`)",
+)
+
+
+def test_placeholder_commands_exit_cleanly():
+    assert main(["api"]) == 0
 
 
 def test_missing_command_is_a_usage_error():
@@ -155,3 +171,38 @@ def test_evaluate_command_fails_when_nothing_registered(tmp_path, sample_transac
     )
 
     assert exit_code == 1
+
+
+@requires_kafka
+def test_producer_then_consumer_commands_end_to_end(tmp_path, sample_transactions_df):
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+    topic = f"cli-test-transactions-{uuid.uuid4().hex[:8]}"
+
+    producer_exit = main(
+        [
+            "producer",
+            "--raw-path",
+            str(csv_path),
+            "--topic",
+            topic,
+            "--rate",
+            "0",
+            "--limit",
+            "10",
+        ]
+    )
+    assert producer_exit == 0
+
+    consumer_exit = main(
+        [
+            "consumer",
+            "--topic",
+            topic,
+            "--group-id",
+            f"cli-test-group-{uuid.uuid4().hex[:8]}",
+            "--max-messages",
+            "10",
+        ]
+    )
+    assert consumer_exit == 0

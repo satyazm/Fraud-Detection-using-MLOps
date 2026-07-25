@@ -2,11 +2,12 @@
 
 ## Status
 
-Milestones 1-3 are implemented: `common`, `domain`, `data`, `features`,
-and `models` are real. `streaming`, `serving`, and `monitoring` are
-still scaffolding — this document records intent for them so those
-milestones have a target to build toward, and so deviations get
-captured as ADRs (see `docs/decisions/`).
+Milestones 1-4 are implemented: `common`, `domain`, `data`, `features`,
+`models`, and `streaming` (producer/consumer; no inference in the
+stream yet) are real. `serving` and `monitoring` are still scaffolding
+— this document records intent for them so those milestones have a
+target to build toward, and so deviations get captured as ADRs (see
+`docs/decisions/`).
 
 ## Layering (clean architecture)
 
@@ -21,7 +22,7 @@ layer's interface:
 | `data`      | Ingestion, validation, preprocessing, splitting for the PaySim dataset |
 | `features`  | One feature pipeline shared by offline training, online inference, and future streaming (ADR-0003) |
 | `models`    | Training, comparison, evaluation, MLflow tracking/registry |
-| `streaming` | Kafka producers/consumers for real-time transaction events |
+| `streaming` | Kafka producer/consumer, sharing `domain.entities.Transaction` as the wire schema (ADR-0005) |
 | `serving`   | Inference API (FastAPI) that scores transactions            |
 | `monitoring`| Data/model drift and performance observability              |
 | `utils`     | Generic, dependency-free helpers                            |
@@ -74,6 +75,6 @@ other way around — see ADR-0001 for how decisions like this are tracked.
 
 ## Local infrastructure
 
-`docker-compose.yml` at the repo root defines the target local stack
-(Kafka, Redis, MLflow, Prometheus, Grafana). Nothing in the codebase
-talks to these services yet.
+`docker-compose.yml` at the repo root defines the target local stack.
+Kafka (+ Kafka UI) is live and used by `streaming/`. Redis, MLflow,
+Prometheus, and Grafana remain scaffolding for later milestones.

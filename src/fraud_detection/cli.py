@@ -2,8 +2,9 @@
 
 `ingest`/`validate`/`preprocess` run the data pipeline (Milestone 2).
 `train`/`evaluate` run model training/evaluation with MLflow tracking
-(Milestone 3). `producer`/`consumer`/`api` remain placeholders — each
-logs which later milestone implements it — so the full operational
+(Milestone 3). `producer`/`consumer` stream/log PaySim transactions via
+Kafka (Milestone 4; no inference yet). `api` remains a placeholder —
+it logs which later milestone implements it — so the full operational
 surface is visible early.
 """
 
@@ -51,12 +52,19 @@ from fraud_detection.models.training import (
     select_best_run,
     train_and_compare,
 )
+from fraud_detection.streaming.consumer import (
+    DEFAULT_GROUP_ID,
+    consume_transactions,
+)
+from fraud_detection.streaming.producer import (
+    DEFAULT_BOOTSTRAP_SERVERS,
+    DEFAULT_TOPIC,
+    produce_transactions,
+)
 
 logger = get_logger("fraud_detection.cli")
 
 _PLACEHOLDER_PLANNED_IN = {
-    "producer": "Milestone 4 (Kafka Streaming)",
-    "consumer": "Milestone 4 (Kafka Streaming)",
     "api": "Milestone 6 (FastAPI Serving)",
 }
 
@@ -204,6 +212,30 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_producer(args: argparse.Namespace) -> int:
+    limit = None if args.limit == 0 else args.limit
+    sent = produce_transactions(
+        raw_path=args.raw_path,
+        topic=args.topic,
+        bootstrap_servers=args.bootstrap_servers,
+        rate_per_second=args.rate,
+        limit=limit,
+    )
+    logger.info("producer command complete", extra={"sent": sent})
+    return 0
+
+
+def _cmd_consumer(args: argparse.Namespace) -> int:
+    processed = consume_transactions(
+        topic=args.topic,
+        bootstrap_servers=args.bootstrap_servers,
+        group_id=args.group_id,
+        max_messages=args.max_messages,
+    )
+    logger.info("consumer command complete", extra={"processed": processed})
+    return 0
+
+
 def _run_placeholder(command: str) -> int:
     logger.info(
         "command not yet implemented",
@@ -268,6 +300,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit MLflow model URI; defaults to the latest registered version",
     )
     evaluate_parser.set_defaults(func=_cmd_evaluate)
+
+    producer_parser = subparsers.add_parser(
+        "producer", help="Stream PaySim transactions onto a Kafka topic"
+    )
+    producer_parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
+    producer_parser.add_argument("--topic", type=str, default=DEFAULT_TOPIC)
+    producer_parser.add_argument("--bootstrap-servers", type=str, default=DEFAULT_BOOTSTRAP_SERVERS)
+    producer_parser.add_argument(
+        "--rate", type=float, default=5.0, help="Messages per second (<=0 for no delay)"
+    )
+    producer_parser.add_argument(
+        "--limit", type=int, default=1000, help="Max rows to stream; 0 means unlimited"
+    )
+    producer_parser.set_defaults(func=_cmd_producer)
+
+    consumer_parser = subparsers.add_parser(
+        "consumer", help="Consume and log PaySim transactions from Kafka"
+    )
+    consumer_parser.add_argument("--topic", type=str, default=DEFAULT_TOPIC)
+    consumer_parser.add_argument("--bootstrap-servers", type=str, default=DEFAULT_BOOTSTRAP_SERVERS)
+    consumer_parser.add_argument("--group-id", type=str, default=DEFAULT_GROUP_ID)
+    consumer_parser.add_argument(
+        "--max-messages",
+        type=int,
+        default=None,
+        help="Stop after N messages; omit to run until interrupted",
+    )
+    consumer_parser.set_defaults(func=_cmd_consumer)
 
     for name, planned_in in _PLACEHOLDER_PLANNED_IN.items():
         placeholder_parser = subparsers.add_parser(

@@ -87,5 +87,6 @@ module = [
     "xgboost.*",
     "lightgbm.*",
     "mlflow.*",
+    "confluent_kafka.*",
 ]
 ignore_missing_imports = true
