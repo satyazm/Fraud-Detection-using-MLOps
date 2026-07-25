@@ -2,10 +2,11 @@
 
 ## Status
 
-Phase 1: scaffolding only. Nothing described below as "future" is
-implemented yet — this document records intent so implementation phases
-have a target to build toward, and so deviations get captured as ADRs
-(see `docs/decisions/`).
+Milestones 1-3 are implemented: `common`, `domain`, `data`, `features`,
+and `models` are real. `streaming`, `serving`, and `monitoring` are
+still scaffolding — this document records intent for them so those
+milestones have a target to build toward, and so deviations get
+captured as ADRs (see `docs/decisions/`).
 
 ## Layering (clean architecture)
 
@@ -19,7 +20,7 @@ layer's interface:
 | `common`    | Config loading, logging — no dependency on any other layer |
 | `data`      | Ingestion, validation, preprocessing, splitting for the PaySim dataset |
 | `features`  | One feature pipeline shared by offline training, online inference, and future streaming (ADR-0003) |
-| `models`    | Training, evaluation, model registry integration           |
+| `models`    | Training, comparison, evaluation, MLflow tracking/registry |
 | `streaming` | Kafka producers/consumers for real-time transaction events |
 | `serving`   | Inference API (FastAPI) that scores transactions            |
 | `monitoring`| Data/model drift and performance observability              |
