@@ -1,1 +1,1 @@
-"""Data ingestion and validation layer (implemented in a later phase)."""
+"""Data ingestion, validation, preprocessing, and splitting for PaySim."""

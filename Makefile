@@ -1,4 +1,4 @@
-.PHONY: install install-dev lint format typecheck test precommit clean train producer consumer api
+.PHONY: install install-dev lint format typecheck test precommit clean ingest validate preprocess train producer consumer api
 
 PYTHON := python3.11
 
@@ -30,6 +30,16 @@ precommit:
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage htmlcov
+
+# --- Phase 2: data pipeline ---
+ingest:
+	fraud-detection ingest
+
+validate:
+	fraud-detection validate
+
+preprocess:
+	fraud-detection preprocess
 
 # --- Placeholder operational commands (wired up to real logic in later phases) ---
 train:
