@@ -11,19 +11,23 @@ feature pipeline (see docs/decisions/0003-shared-feature-pipeline.md —
 that ADR deliberately scopes out fitted transforms; this is where one
 lives instead, private to a single model).
 
-XGBoost tolerates the raw `negative/positive` ratio as `scale_pos_weight`
-fine on this dataset. LightGBM does not: empirically (see
-docs/model_report.md), its leaf-wise growth over-corrects at the raw
-~774x ratio here and floods predictions with false positives (PR-AUC
-0.01 vs XGBoost's 0.998 at the same ratio). A sqrt-dampened weight
-(`sqrt(negative/positive)`, a standard mitigation for this exact
-failure mode) recovers most of the signal (PR-AUC ~0.51) without
-touching XGBoost's already-good behavior.
+LightGBM needs one extra hyperparameter XGBoost doesn't:
+`reg_lambda=1.0`. Root cause, confirmed by controlled experiments (see
+docs/decisions/0004-lightgbm-regularization.md): XGBoost defaults to
+L2 regularization (`reg_lambda=1`); LightGBM defaults to *none*
+(`reg_lambda=0`). At this dataset's ~774x class weight, LightGBM's
+leaf-wise boosting has nothing to stop it compounding that weight
+across rounds — validation PR-AUC peaked after a single boosting round
+(confirmed with early stopping) and degraded monotonically from there
+to PR-AUC 0.01 at round 200, while XGBoost stayed at PR-AUC ~0.998
+across the same weight and round counts (10 to 500, tested). Matching
+XGBoost's default `reg_lambda=1` on LightGBM — nothing else changed —
+recovers PR-AUC to ~0.995. So: not a resampling/weighting problem, a
+missing-regularization-default problem.
 """
 
 from __future__ import annotations
 
-import math
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -33,6 +37,7 @@ import mlflow
 import mlflow.sklearn
 import pandas as pd
 from lightgbm import LGBMClassifier
+from mlflow.models import infer_signature
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -110,12 +115,14 @@ def _build_xgboost(scale_pos_weight: float) -> BaseEstimator:
 
 
 def _build_lightgbm(scale_pos_weight: float) -> BaseEstimator:
-    # sqrt-dampened, not the raw ratio — see module docstring.
+    # reg_lambda=1.0 matches XGBoost's default L2 regularization, which
+    # LightGBM does not apply by default — see module docstring.
     return LGBMClassifier(
         n_estimators=200,
         max_depth=-1,
         learning_rate=0.1,
-        scale_pos_weight=math.sqrt(scale_pos_weight),
+        scale_pos_weight=scale_pos_weight,
+        reg_lambda=1.0,
         random_state=RANDOM_STATE,
         n_jobs=-1,
         verbosity=-1,
@@ -173,7 +180,14 @@ def train_and_compare(
             )
             mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.as_metrics_dict().items()})
             mlflow.log_dict({"feature_names": list(dataset.feature_names)}, "feature_names.json")
-            mlflow.sklearn.log_model(model, artifact_path="model")
+            input_example = dataset.x_train.iloc[:5]
+            signature = infer_signature(input_example, model.predict(input_example))
+            mlflow.sklearn.log_model(
+                model,
+                artifact_path="model",
+                signature=signature,
+                input_example=input_example,
+            )
 
             results.append(
                 TrainingRunResult(
