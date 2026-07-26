@@ -1,0 +1,109 @@
+# Single-node KRaft broker (no ZooKeeper), same image and KRaft
+# settings as docker-compose.yml's kafka service — simplified to one
+# listener: docker-compose needed PLAINTEXT (host) + PLAINTEXT_INTERNAL
+# (containers) because host-side Python (the CLI producer/consumer)
+# and containers needed different addresses for the same broker. Every
+# consumer of Kafka in this Kubernetes deployment is itself a pod (the
+# producer Job, the flink-worker Deployment), so one in-cluster
+# listener is enough — see docs/decisions/0009-deployment-and-operations.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: fraud-detection
+  labels:
+    app: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.1
+          ports:
+            - containerPort: 9092
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka:9092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            # "1@kafka:9093" (the Service DNS name, matching Docker
+            # Compose's "1@kafka:9093") looked right but isn't: with a
+            # single combined broker+controller, this is the pod
+            # calling *itself* through its own Service's ClusterIP —
+            # confirmed hanging forever with "Connection to node 1
+            # (kafka/<clusterIP>:9093) could not be established" in a
+            # live crash-loop, a `kindnet` hairpin-NAT limitation
+            # (some CNIs can't route a pod back to itself via its own
+            # Service VIP). "localhost" is correct here specifically
+            # because this is a loopback call, not a cross-pod one —
+            # see docs/decisions/0009-deployment-and-operations.md.
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@localhost:9093"
+            # Same base64-encoded-UUID requirement as docker-compose.yml;
+            # a different, independently generated cluster id (the two
+            # clusters — Docker Compose and Kubernetes — are unrelated).
+            - name: CLUSTER_ID
+              value: "_cRvvLxjTCSpLSLj9Q2GzA"
+            # Same fix as docker-compose.yml: default replication
+            # factor 3 can never be satisfied by a single broker.
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+          readinessProbe:
+            exec:
+              command: ["kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: fraud-detection
+spec:
+  selector:
+    app: kafka
+  ports:
+    - name: broker
+      port: 9092
+      targetPort: 9092
+    # No port 9093 (CONTROLLER) here: KAFKA_CONTROLLER_QUORUM_VOTERS
+    # uses "localhost", not this Service, so nothing needs to reach
+    # 9093 through it — see the env var's comment above for why.

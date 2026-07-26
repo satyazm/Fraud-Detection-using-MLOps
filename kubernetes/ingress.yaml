@@ -1,0 +1,26 @@
+# Exposes the api Service outside the cluster via ingress-nginx (not
+# installed by kind by default — see
+# docs/decisions/0009-deployment-and-operations.md for the setup
+# step). On a real cloud cluster this would sit behind a real
+# LoadBalancer/DNS name; on `kind` it's reached via the ingress
+# controller's NodePort (see the README's Kubernetes section for the
+# exact local URL).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: fraud-detection
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000

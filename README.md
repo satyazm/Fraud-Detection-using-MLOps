@@ -4,15 +4,17 @@ A production-grade MLOps platform for real-time fraud detection, built on
 the [PaySim](https://www.kaggle.com/datasets/ealaxi/paysim1) synthetic
 mobile-money transaction dataset.
 
-This repository is being built in milestones. **Milestones 1-7 are
+This repository is being built in milestones. **Milestones 1-8 are
 done**: project scaffold, a shared feature-engineering pipeline, the
 data pipeline, model training/comparison with MLflow tracking and
 registry, Kafka streaming, a real-time feature platform (Feast +
 Redis + a real PyFlink streaming job), a real-time inference API
 (FastAPI: Feast online features + an MLflow Production model -> fraud
-probability), and observability (Prometheus metrics, an auto-provisioned
-Grafana dashboard, and Evidently AI data-drift reports). No Airflow/CI-CD/
-Kubernetes yet — that's Milestone 8.
+probability), observability (Prometheus metrics, an auto-provisioned
+Grafana dashboard, and Evidently AI data-drift reports), and
+deployment/operations (a real Kubernetes deployment, three Airflow
+DAGs, and an expanded CI). Stress testing, also named in the Milestone
+8 brief, is not done — see ADR-0009.
 
 ## Project layout
 
@@ -563,9 +565,97 @@ See ADR-0008.
 ## Other local infrastructure
 
 `docker-compose.yml` also defines a standalone MLflow tracking server
-for a later milestone — the `api` service talks to the local `mlruns/`
-file store instead (see ADR-0007), and nothing in the codebase talks to
-the standalone server yet. Bring it up if needed: `docker compose up mlflow`.
+unused by this compose stack specifically — the `api` service here
+talks to the local `mlruns/` file store instead (see ADR-0007). It's
+the Kubernetes deployment (below) that actually serves it. Bring the
+Compose one up if needed: `docker compose up mlflow`.
+
+## Kubernetes deployment
+
+`kubernetes/` deploys the same system to a real local `kind` cluster —
+`redis`, `kafka`, a real MLflow tracking server (`api`/`training-job`
+point at it over HTTP, since K8s pods can't share a host filesystem
+the way Compose's bind mount does), `api` (3 replicas, HPA-scaled
+2-10 on CPU, reachable via an nginx `Ingress`), `flink-worker`, and
+`prometheus`/`grafana`/`redis-exporter` mirroring the Compose
+monitoring stack. See ADR-0009 for what actually broke running this
+for real and how it was fixed.
+
+One-time setup:
+
+```bash
+# Build the images kubernetes/*.yaml reference
+docker build -f docker/Dockerfile.api -t mloops-api:latest .
+docker build -f docker/Dockerfile.worker -t mloops-worker:latest .
+docker build -f docker/Dockerfile.flink-worker -t mloops-flink-worker:latest .
+
+# Create the cluster (run from the repo root — kind-cluster.yaml's
+# extraMounts path is relative to the current working directory)
+kind create cluster --config kubernetes/kind-cluster.yaml --name mloops
+
+# Load the images into it — kind's own containerd doesn't see the
+# host's Docker image store otherwise
+kind load docker-image mloops-api:latest mloops-worker:latest mloops-flink-worker:latest --name mloops
+
+# ingress-nginx and metrics-server aren't installed by kind by
+# default; hpa.yaml/ingress.yaml need them
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+Deploy everything:
+
+```bash
+kubectl apply -f kubernetes/
+```
+
+`training-job` needs a model registered *and* promoted to
+"Production" before `api` can serve real predictions (same one-time
+step as Docker Compose's, see above, run against this cluster's MLflow
+instead):
+
+```python
+from mlflow.tracking import MlflowClient
+MlflowClient(tracking_uri="http://localhost:5000").transition_model_version_stage(
+    name="fraud-detection-classifier", version=1, stage="Production"
+)
+# (port-forward first: kubectl port-forward -n fraud-detection svc/mlflow 5000:5000)
+```
+
+Then reach the API via the ingress controller's mapped port (see
+`kind-cluster.yaml`'s `extraPortMappings`): `curl http://localhost:8090/health`.
+
+## Airflow orchestration
+
+Three DAGs (`airflow/dags/`) orchestrate this project's own CLI on a
+schedule, each running `mloops-worker:latest` as a short-lived sibling
+container via `DockerOperator` rather than reimplementing any pipeline
+logic in Airflow itself:
+
+| DAG | Schedule | What it does |
+|-----|----------|---------------|
+| `daily_feature_materialization` | `@daily` | extract -> validate -> preprocess -> materialize Feast |
+| `weekly_retraining` | `@weekly` | preprocess -> train -> evaluate |
+| `monthly_drift_report` | `@monthly` | check predictions collected -> Evidently drift report |
+
+Runs as its own Docker Compose stack, not pip-installed into this
+project's venv:
+
+```bash
+cd airflow
+docker compose up airflow-init   # one-time: DB schema + admin user (admin/admin)
+docker compose up -d
+```
+
+Needs the main stack's network to already exist (`docker compose up`
+from the repo root at least once), and `mloops-worker:latest` built
+(see the Kubernetes section above). Airflow UI: `http://localhost:8085`
+(DAGs are paused on creation — unpause before triggering). Both
+`weekly_retraining` and `daily_feature_materialization` run against a
+small sample CSV rather than the full ~6.4M-row PaySim file, and cap
+their containers at 1.5GB — see ADR-0009 for exactly why (the full
+file threatens the whole Docker Desktop VM this stack and `kind` share,
+not just the one task).
 
 ## Roadmap
 
@@ -590,7 +680,13 @@ the standalone server yet. Bring it up if needed: `docker compose up mlflow`.
   reports comparing training data against a real log of served
   predictions. No Kafka broker metrics or ground-truth-based model
   performance metrics (precision/recall/AP) — see ADR-0008.
-- **Milestone 8:** Airflow, CI/CD, Kubernetes, deployment, stress testing.
+- **Milestone 8 (done):** A real Kubernetes deployment (`kubernetes/`,
+  a local `kind` cluster), three Airflow DAGs orchestrating this
+  project's own CLI via `DockerOperator`, and an expanded CI (Docker
+  image builds, `kubeconform` manifest validation, Airflow DAG import
+  checks). Stress testing, also named in the milestone brief, is not
+  done — see ADR-0009 for the full scope and every real bug found
+  running each of these for real.
 
 See `docs/architecture.md` and `docs/decisions/` for the reasoning
 behind these choices.

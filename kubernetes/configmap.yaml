@@ -1,0 +1,50 @@
+# Non-sensitive configuration, shared by every pod that needs it.
+# The Redis *password* is not here — see secret.yaml — but the host
+# and port are: they're not sensitive, and keeping them next to
+# MLFLOW_TRACKING_URI/KAFKA_BOOTSTRAP_SERVERS here (rather than
+# splitting "host" into the ConfigMap and "port" into the Secret)
+# keeps one connection's config in one place.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-detection-config
+  namespace: fraud-detection
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  KAFKA_TOPIC: "transactions"
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+  MLFLOW_MODEL_NAME: "fraud-detection-classifier"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+---
+# Overrides the feature_store.yaml baked into the api/worker/flink-worker
+# images (feast_repo/feature_store.yaml, connection_string:
+# "localhost:6379") — the same "container-side override via a
+# different file" pattern ADR-0007 already established for Docker
+# Compose (docker/feature_store.docker.yaml), except here the Redis
+# host/port/password are template variables Feast's own config loader
+# resolves via `os.path.expandvars()` against whatever's in the pod's
+# environment (confirmed working in ADR-0007's investigation) — one
+# file works for every pod regardless of which Secret/ConfigMap values
+# it actually got, instead of a third static file to keep in sync.
+#
+# registry.db (the applied entity/feature-view schema) is NOT part of
+# this override — it's baked into each image at build time (see
+# docker/Dockerfile.worker) and mounting this ConfigMap only replaces
+# feature_store.yaml, not the whole feast_repo/ directory.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-feature-store-config
+  namespace: fraud-detection
+data:
+  feature_store.yaml: |
+    project: fraud_detection
+    provider: local
+    registry: registry.db
+    online_store:
+      type: redis
+      connection_string: "${REDIS_HOST}:${REDIS_PORT},password=${REDIS_PASSWORD}"
+    offline_store:
+      type: file
+    entity_key_serialization_version: 3

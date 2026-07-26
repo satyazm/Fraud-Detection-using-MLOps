@@ -1,0 +1,39 @@
+# Local `kind` cluster config for this project — not applied via
+# `kubectl apply`, used by `kind create cluster --config`. Not part of
+# the `kubernetes/` manifest set kubectl deploys; kept alongside it
+# because it's the one piece of cluster setup specific to running this
+# project locally. See docs/decisions/0009-deployment-and-operations.md
+# and the README's Kubernetes section.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # kind's own ingress-nginx recipe: the control-plane node's 80/443
+    # are published to the host, and this label + the ingress-nginx
+    # manifest's nodeSelector/tolerations target this node specifically.
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8090
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8453
+        protocol: TCP
+    extraMounts:
+      # The raw PaySim CSV, mounted into the node so the training-job/
+      # producer-job Jobs can read it via a hostPath volume — see
+      # kubernetes/jobs.yaml. Local-demo-scale only: a real cluster
+      # would use a real data source, not a host bind mount.
+      #
+      # Relative to the current working directory `kind create
+      # cluster` is run from (kind's documented behavior for relative
+      # extraMounts paths) — always run it from the repo root, e.g.
+      # `kind create cluster --config kubernetes/kind-cluster.yaml`,
+      # matching how every other command in this project is invoked.
+      - hostPath: ./data
+        containerPath: /host-data

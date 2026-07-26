@@ -1,0 +1,133 @@
+# Same scrape targets as docker/prometheus.yml (Milestone 7),
+# translated to Kubernetes Service DNS names — api:8000, redis-exporter:9121.
+# No cadvisor job here: kubelet's built-in cAdvisor already backs
+# metrics-server (installed for hpa.yaml), and scraping it directly
+# needs Prometheus's kubernetes_sd_configs service discovery, a
+# meaningfully bigger addition for two dashboard panels that would
+# duplicate what metrics-server already demonstrates via the HPA — a
+# deliberate scope cut, not an oversight; see
+# docs/decisions/0009-deployment-and-operations.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: fraud-detection
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: fraud-detection-api
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["api:8000"]
+      - job_name: redis
+        static_configs:
+          - targets: ["redis-exporter:9121"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: fraud-detection
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: fraud-detection
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+---
+# Real per-instance Redis metrics (memory, ops/sec, connected
+# clients), not just the API's own reachability probe — same
+# oliver006/redis_exporter image as docker-compose.yml, now pointed at
+# a password-protected Redis (REDIS_PASSWORD, unlike Docker Compose's
+# unauthenticated one).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: fraud-detection
+  labels:
+    app: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.62.0
+          ports:
+            - containerPort: 9121
+          env:
+            - name: REDIS_ADDR
+              value: "redis:6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-secrets
+                  key: redis-password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: fraud-detection
+spec:
+  selector:
+    app: redis-exporter
+  ports:
+    - port: 9121
+      targetPort: 9121

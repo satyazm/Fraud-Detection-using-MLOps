@@ -1,0 +1,54 @@
+# Generic worker image (Milestone 8): everything that isn't the
+# always-on API or the PyFlink job — producer, consumer, train,
+# evaluate, ingest/validate/preprocess, feast-apply/materialize,
+# drift-report. All of these need the exact same dependencies
+# (requirements/prod.txt) and none of them need a JDK, so this is one
+# image with the actual subcommand supplied at run time (Kubernetes
+# Job `command:`/`args:`, Airflow's DockerOperator `command=`) rather
+# than N near-identical images each paying the same ~4-minute
+# evidently/apache-flink install cost for no real difference — see
+# docs/decisions/0009-deployment-and-operations.md.
+#
+# Same PYTHONPATH-based execution as Dockerfile.api, for the same
+# reason (fraud_detection.common.config.PROJECT_ROOT resolution).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# See Dockerfile.api: apache-beam (via apache-flink, a base.txt
+# dependency even for images that never run the Flink job) needs a
+# real C toolchain to build, not just `gcc`.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir "setuptools<81" \
+    && pip install --no-cache-dir --no-build-isolation -r requirements/prod.txt
+
+COPY configs/ configs/
+COPY feast_repo/ feast_repo/
+COPY src/ src/
+
+ENV PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1
+
+# Bakes feast_repo/registry.db into the image at build time. `feast
+# apply` only needs the local repo files (definitions.py schema +
+# feature_store.yaml), not a live Redis connection — confirmed in
+# ADR-0007's Docker verification (`/ready` reported feast_reachable:
+# true with Redis down). The *online store address* in
+# feature_store.yaml is never baked into registry.db, only the
+# entity/feature-view schema is — so Kubernetes can swap in a
+# different feature_store.yaml (real Redis auth, a different
+# hostname) via a ConfigMap volume mount at runtime and this stays
+# valid. Docker Compose's bind-mounted ./feast_repo simply shadows
+# this with the host's copy — harmless, not a conflict.
+RUN python -m fraud_detection.cli feast-apply --repo-path feast_repo
+
+RUN useradd --create-home --uid 1000 fraud-detection \
+    && chown -R fraud-detection:fraud-detection /app
+USER fraud-detection
+
+ENTRYPOINT ["python", "-m", "fraud_detection.cli"]
+CMD ["--help"]

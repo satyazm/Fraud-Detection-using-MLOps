@@ -1,0 +1,110 @@
+# A REAL MLflow tracking server — unlike Docker Compose's api service
+# (ADR-0007), which reads the local mlruns/ file store directly via a
+# bind mount. That doesn't translate to Kubernetes: pods don't share a
+# host filesystem, and a file-store artifact_uri bakes in an absolute
+# path (confirmed the hard way in ADR-0007) that's meaningless across
+# pods anyway. The api/training-job pods here point
+# MLFLOW_TRACKING_URI at this server (http://mlflow:5000) instead.
+#
+# --serve-artifacts + --artifacts-destination (not --default-artifact-root)
+# so the server proxies artifact reads/writes over its own HTTP API.
+# --default-artifact-root bakes a plain local path into each
+# experiment's artifact_location, which client pods then try to
+# write to directly on their own filesystem — they don't have
+# /mlflow mounted, so that 403s with PermissionError. Confirmed the
+# hard way: training-job failed on mlflow.log_dict with exactly that
+# error before this was proxied. See
+# docs/decisions/0009-deployment-and-operations.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: fraud-detection
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # single ReadWriteOnce volume — never run two mlflow pods at once
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v2.16.2
+          command:
+            - mlflow
+            - server
+            - --backend-store-uri
+            - sqlite:///mlflow/mlflow.db
+            - --serve-artifacts
+            - --artifacts-destination
+            - /mlflow/artifacts
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "5000"
+            - --workers
+            - "2"
+          ports:
+            - containerPort: 5000
+          volumeMounts:
+            - name: mlflow-data
+              mountPath: /mlflow
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi # 512Mi OOMKilled once --serve-artifacts started proxying
+              # model upload/download bytes through the tracking server's own
+              # gunicorn workers (4 workers by default, unrelated to the cpu
+              # limit above) instead of just handling small metadata calls.
+              # --workers 2 plus this bump fixed it; confirmed via exitCode
+              # 137 / reason OOMKilled on the pod's container status.
+      volumes:
+        - name: mlflow-data
+          persistentVolumeClaim:
+            claimName: mlflow-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-data
+  namespace: fraud-detection
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: fraud-detection
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - port: 5000
+      targetPort: 5000

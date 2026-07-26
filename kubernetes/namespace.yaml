@@ -1,0 +1,6 @@
+# Everything in this milestone's Kubernetes deployment lives in one
+# namespace — a single local demo cluster, not a multi-tenant one.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fraud-detection

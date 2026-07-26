@@ -1,0 +1,103 @@
+# Airflow, run as its own stack (not pip-installed into this
+# project's venv/requirements) — a trimmed-down version of Airflow's
+# own official quick-start compose file: one Postgres backing DB,
+# LocalExecutor (no separate worker/Redis broker needed at this
+# scale), webserver + scheduler. DAGs (airflow/dags/) use
+# DockerOperator to launch the same `mloops-worker:latest` image
+# Kubernetes uses (docker/Dockerfile.worker) as short-lived sibling
+# containers on the main docker-compose.yml's network — Airflow
+# orchestrates other systems, it doesn't import this project's Python
+# code in-process. See docs/decisions/0009-deployment-and-operations.md.
+#
+# Run from the airflow/ directory:
+#   docker compose up airflow-init   # one-time: creates the DB schema + admin user
+#   docker compose up -d
+# Needs the main stack's network to already exist (`docker compose up`
+# from the repo root at least once) so DAGs can reach kafka/redis/mlflow
+# by service name.
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.3
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    # Off by default — without it the scheduler never starts the
+    # :8974/health server this compose file's own healthcheck curls,
+    # so the container sits at "starting" forever (confirmed via
+    # `airflow config get-value scheduler enable_health_check` -> False).
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-docker==3.14.0
+    # The DAGs' DockerOperator bind-mounts read this to build their
+    # Mount sources — Docker bind mounts need real host paths, and
+    # this only runs on one developer's machine, so "adjust one env
+    # var" is the honest, minimal answer instead of pretending a
+    # portable default exists. Override in a .env file next to this
+    # compose file if this repo lives somewhere else.
+    PROJECT_ROOT: ${PROJECT_ROOT:-/Users/satyamyadav/Projects/mloops}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    # DockerOperator launches sibling containers on the host's Docker
+    # daemon from inside the scheduler container ("Docker-outside-of-
+    # Docker") — it needs the real host socket, not a nested daemon.
+    - /var/run/docker.sock:/var/run/docker.sock
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname Admin --lastname User \
+          --role Admin --email admin@example.com || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8085:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  airflow-postgres-data:

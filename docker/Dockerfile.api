@@ -42,6 +42,12 @@ COPY src/ src/
 ENV PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1
 
+# Bakes feast_repo/registry.db into the image — needed for Kubernetes
+# (Milestone 8), where pods don't share a filesystem the way Docker
+# Compose's bind mount (./feast_repo, which simply shadows this) does.
+# See docker/Dockerfile.worker for the full reasoning.
+RUN python -m fraud_detection.cli feast-apply --repo-path feast_repo
+
 RUN useradd --create-home --uid 1000 fraud-detection \
     && chown -R fraud-detection:fraud-detection /app
 USER fraud-detection

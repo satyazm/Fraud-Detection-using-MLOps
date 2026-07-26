@@ -1,0 +1,100 @@
+# The real-time inference API (ADR-0007), horizontally scaled: 3
+# replicas here as a baseline, hpa.yaml scales 2-10 under load. Each
+# replica loads its own copy of the Production model at startup —
+# a registry-backed "Production" stage exists precisely so that's safe
+# to do independently per pod (see ADR-0007's "load once, never per
+# request" reasoning, now applied per-replica instead of per-process).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: fraud-detection
+  labels:
+    app: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: api
+          image: mloops-api:latest
+          imagePullPolicy: IfNotPresent
+          # `command:`, not `args:` — Dockerfile.api has no ENTRYPOINT
+          # (its whole invocation is one CMD, unlike Dockerfile.worker/
+          # Dockerfile.flink-worker's ENTRYPOINT+CMD split), so `args:`
+          # alone replaces CMD with just ["api", ...] and Kubernetes
+          # tries to exec "api" as a binary — confirmed live:
+          # "exec: \"api\": executable file not found in $PATH".
+          command:
+            - python
+            - -m
+            - fraud_detection.cli
+            - api
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --tracking-uri
+            - "$(MLFLOW_TRACKING_URI)"
+            - --registry-name
+            - "$(MLFLOW_MODEL_NAME)"
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: fraud-detection-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-secrets
+                  key: redis-password
+          volumeMounts:
+            - name: feast-feature-store-config
+              mountPath: /app/feast_repo/feature_store.yaml
+              subPath: feature_store.yaml
+          # Same endpoints Docker Compose's HEALTHCHECK dogfoods via
+          # `fraud-detection ready` (ADR-0007) — here Kubernetes calls
+          # them directly instead of shelling out to the CLI.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: feast-feature-store-config
+          configMap:
+            name: feast-feature-store-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: fraud-detection
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 8000
+      targetPort: 8000

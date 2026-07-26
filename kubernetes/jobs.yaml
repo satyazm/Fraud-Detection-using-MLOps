@@ -1,0 +1,115 @@
+# One-shot Jobs (both using the shared `worker` image — see
+# docker/Dockerfile.worker) that make the Kubernetes deployment
+# self-sufficient: a fresh cluster has no MLflow runs and no traffic
+# until these run once. Both read from a small, class-balanced sample
+# of the raw PaySim CSV (data/raw/paysim_k8s_sample.csv — 38,213 rows,
+# all 8,213 real fraud rows plus a 30,000-row non-fraud sample;
+# generated once, not fabricated data) rather than the full ~6.4M-row
+# file: this milestone is about deployment infrastructure, not
+# re-proving model quality (already done for real in Milestone 3) —
+# training on the full file was tried first and genuinely OOMKilled
+# repeatedly on this local kind cluster's 7.75GB VM even at a 4Gi
+# limit (~1.74GB just to load the raw CSV, confirmed by direct
+# measurement, before feature engineering/preprocessing/training add
+# more). Mounted from the host via hostPath (kind's `extraMounts`,
+# configured when the cluster is created) rather than baked into the
+# image or fetched over the network — see
+# docs/decisions/0009-deployment-and-operations.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: training-job
+  namespace: fraud-detection
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: train
+          image: mloops-worker:latest
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - >
+              python -m fraud_detection.cli preprocess
+              --raw-path /host-data/raw/paysim_k8s_sample.csv
+              --output-dir /tmp/processed &&
+              python -m fraud_detection.cli train
+              --processed-dir /tmp/processed
+              --tracking-uri "$(MLFLOW_TRACKING_URI)"
+              --registry-name "$(MLFLOW_MODEL_NAME)"
+          envFrom:
+            - configMapRef:
+                name: fraud-detection-config
+          volumeMounts:
+            - name: host-data
+              mountPath: /host-data
+              readOnly: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2
+              memory: 1500Mi
+      volumes:
+        - name: host-data
+          hostPath:
+            path: /host-data
+            type: Directory
+---
+# Demo traffic generator: a finite --limit so the Job actually
+# completes (a Deployment would be wrong here — this isn't meant to
+# run forever, `producer` is a one-shot data-loading step, same as
+# how it's used ad hoc from the CLI/README elsewhere in this project).
+# Same sample CSV as training-job, for the same memory reason —
+# `produce_transactions` loads the whole file before slicing to
+# --limit (existing Milestone 4 behavior).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: producer-job
+  namespace: fraud-detection
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      containers:
+        - name: producer
+          image: mloops-worker:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - producer
+            - --raw-path
+            - /host-data/raw/paysim_k8s_sample.csv
+            - --bootstrap-servers
+            - "$(KAFKA_BOOTSTRAP_SERVERS)"
+            - --topic
+            - "$(KAFKA_TOPIC)"
+            - --rate
+            - "20"
+            - --limit
+            - "200"
+          envFrom:
+            - configMapRef:
+                name: fraud-detection-config
+          volumeMounts:
+            - name: host-data
+              mountPath: /host-data
+              readOnly: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: host-data
+          hostPath:
+            path: /host-data
+            type: Directory

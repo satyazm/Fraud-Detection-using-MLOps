@@ -1,0 +1,52 @@
+# PyFlink streaming worker (Milestone 8): the one image that actually
+# needs a JDK — `fraud-detection flink-worker` launches a real JVM via
+# py4j (see docs/decisions/0006-feast-redis-flink.md) — and the Flink
+# Kafka connector JAR, which pip doesn't provide (same one
+# `make flink-jar` downloads for host-side use).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# JDK 21, not 17: this image's Debian release (trixie) only packages
+# openjdk-21/-25, not -17 — confirmed via `apt-cache search openjdk`.
+# Flink 2.x supports 11/17/21 (see the README's host-side setup
+# instructions), so 21 is a supported, not a workaround, choice.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential curl openjdk-21-jdk-headless \
+    && rm -rf /var/lib/apt/lists/* \
+    # openjdk-21-jdk-headless installs under an architecture-specific
+    # path (java-21-openjdk-amd64 vs -arm64); this image is built for
+    # both locally (arm64) and in CI (amd64), so resolve it once here
+    # into a fixed path instead of hardcoding either.
+    && ln -sf "$(dirname "$(dirname "$(readlink -f /usr/bin/java)")")" /usr/lib/jvm/default-java
+
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir "setuptools<81" \
+    && pip install --no-cache-dir --no-build-isolation -r requirements/prod.txt
+
+COPY configs/ configs/
+COPY feast_repo/ feast_repo/
+COPY src/ src/
+
+# Same JAR make flink-jar downloads for host-side use — baked in here
+# instead of downloaded at container start, so a flaky network at
+# startup can't take down an already-running worker on restart.
+RUN mkdir -p /app/.flink-jars \
+    && curl -sL -o /app/.flink-jars/flink-sql-connector-kafka-5.0.0-2.2.jar \
+    https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/5.0.0-2.2/flink-sql-connector-kafka-5.0.0-2.2.jar
+
+ENV PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1
+
+# Bakes feast_repo/registry.db into the image — see docker/Dockerfile.worker.
+RUN python -m fraud_detection.cli feast-apply --repo-path feast_repo
+
+RUN useradd --create-home --uid 1000 fraud-detection \
+    && chown -R fraud-detection:fraud-detection /app
+USER fraud-detection
+
+ENTRYPOINT ["python", "-m", "fraud_detection.cli"]
+CMD ["flink-worker"]

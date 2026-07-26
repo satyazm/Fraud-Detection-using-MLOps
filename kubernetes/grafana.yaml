@@ -1,0 +1,315 @@
+# Same auto-provisioning approach as docker-compose.yml (Milestone 7)
+# — datasource + dashboard loaded on start, no manual UI setup. The
+# two Infrastructure panels (Container CPU/Memory) will read empty
+# here, same as on Docker Desktop for Mac (ADR-0008) — no cadvisor
+# scrape target in this cluster either; see prometheus.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: fraud-detection
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+  dashboard-provider.yml: |
+    apiVersion: 1
+    providers:
+      - name: fraud-detection
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard
+  namespace: fraud-detection
+data:
+  fraud-detection.json: |
+    {
+      "uid": "fraud-detection",
+      "title": "Fraud Detection Platform",
+      "description": "API health, model usage, and infrastructure for the real-time fraud detection service.",
+      "tags": ["fraud-detection"],
+      "timezone": "browser",
+      "editable": true,
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "time": { "from": "now-1h", "to": "now" },
+      "panels": [
+        { "id": 100, "type": "row", "title": "API Health", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Requests/sec",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(prediction_requests_total[1m]))",
+              "legendFormat": "requests/sec"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Response Time (p50 / p95 / p99)",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.50, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.95, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))",
+              "legendFormat": "p95"
+            },
+            {
+              "refId": "C",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.99, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Error Rate",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(prediction_errors_total[5m])) / clamp_min(sum(rate(prediction_requests_total[5m])), 1e-9)",
+              "legendFormat": "error rate"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 }, "overrides": [] }
+        },
+        { "id": 101, "type": "row", "title": "Model Usage", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 } },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Fraud Predictions/hour",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(increase(model_predictions_total{prediction=\"1\"}[1h]))",
+              "legendFormat": "fraud predictions/hour"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Average Fraud Probability",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "rate(model_fraud_probability_sum[5m]) / clamp_min(rate(model_fraud_probability_count[5m]), 1e-9)",
+              "legendFormat": "avg fraud probability"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 }, "overrides": [] }
+        },
+        {
+          "id": 6,
+          "type": "bargauge",
+          "title": "Prediction Outcome Distribution (last 1h)",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (prediction) (increase(model_predictions_total[1h]))",
+              "legendFormat": "prediction={{prediction}}",
+              "instant": true
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "options": { "orientation": "horizontal", "displayMode": "gradient" }
+        },
+        { "id": 102, "type": "row", "title": "Infrastructure", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 } },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Container CPU Usage (empty on this cluster — see ADR-0009)",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"fraud-.*\"}[1m]))",
+              "legendFormat": "{{name}}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Container Memory Usage (empty on this cluster — see ADR-0009)",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (name) (container_memory_usage_bytes{name=~\"fraud-.*\"})",
+              "legendFormat": "{{name}}"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+        },
+        {
+          "id": 9,
+          "type": "stat",
+          "title": "Redis Status",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "redis_up",
+              "legendFormat": "redis_exporter: redis up",
+              "instant": true
+            },
+            {
+              "refId": "B",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "redis_connection_status",
+              "legendFormat": "api: redis reachable",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+              ]
+            },
+            "overrides": []
+          },
+          "options": { "textMode": "value_and_name", "colorMode": "background" }
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "API Pod Replicas Ready (HPA target)",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "count(redis_connection_status)",
+              "legendFormat": "api replicas reporting metrics"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: fraud-detection
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+          volumeMounts:
+            - name: provisioning-datasources
+              mountPath: /etc/grafana/provisioning/datasources/prometheus.yml
+              subPath: datasource.yml
+            - name: provisioning-dashboards
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml
+              subPath: dashboard-provider.yml
+            - name: dashboard
+              mountPath: /var/lib/grafana/dashboards/fraud-detection.json
+              subPath: fraud-detection.json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: provisioning-datasources
+          configMap:
+            name: grafana-provisioning
+        - name: provisioning-dashboards
+          configMap:
+            name: grafana-provisioning
+        - name: dashboard
+          configMap:
+            name: grafana-dashboard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: fraud-detection
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000

@@ -23,13 +23,93 @@ jobs:
           pip install --no-build-isolation -e .
 
       - name: Lint (ruff)
-        run: ruff check src tests feast_repo
+        run: ruff check src tests feast_repo airflow/dags
 
       - name: Format check (black)
-        run: black --check src tests feast_repo
+        run: black --check src tests feast_repo airflow/dags
 
       - name: Type check (mypy)
         run: mypy src
 
       - name: Test (pytest)
         run: pytest --cov=src
+
+  # Milestone 8: catches Dockerfile breakage (missing files, broken
+  # apt/pip installs, the feast-apply-at-build-time step in
+  # Dockerfile.worker) before merge. Build-only, no push — no
+  # registry is configured for this project, and faking a push step
+  # to nowhere would be worse than not having one; deployment to the
+  # local kind cluster is a deliberate manual `kubectl apply`, not
+  # something CI can drive. See docs/decisions/0009-deployment-and-operations.md.
+  build-images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [api, worker, flink-worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.image }} image
+        run: docker build -f docker/Dockerfile.${{ matrix.image }} -t mloops-${{ matrix.image }}:ci .
+
+  # Client-side `kubectl apply --dry-run` needs a live API server for
+  # both the OpenAPI schema and apply's merge-patch computation — it
+  # can't validate offline at all (confirmed the hard way: it fails
+  # immediately with no kubeconfig). kubeconform validates each
+  # manifest's structure against the real Kubernetes OpenAPI schemas
+  # with no cluster required. kind-cluster.yaml isn't a
+  # `kubectl apply`-able resource (it's kind's own cluster config, a
+  # different tool's input), so it's excluded rather than
+  # (mis)validated as one.
+  validate-k8s-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate manifests
+        run: |
+          find kubernetes -name '*.yaml' ! -name 'kind-cluster.yaml' -print0 \
+            | xargs -0 kubeconform -strict -summary
+
+  # A lightweight structural check, not a full Airflow bring-up (no
+  # Postgres, no scheduler/webserver): importing each DAG module is
+  # enough to catch broken imports/syntax errors/DAG-construction bugs
+  # without paying for a full stack in CI. Confirmed this catches real
+  # issues and needs no live DB — matches how these DAGs actually run
+  # (airflow/docker-compose.yml's DockerOperator-based stack).
+  validate-airflow-dags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Airflow + Docker provider
+        run: pip install apache-airflow==2.10.3 apache-airflow-providers-docker==3.14.0
+
+      - name: Import every DAG
+        env:
+          PROJECT_ROOT: ${{ github.workspace }}
+        run: |
+          python -c "
+          import importlib.util, sys, glob
+          errors = []
+          for path in glob.glob('airflow/dags/*.py'):
+              spec = importlib.util.spec_from_file_location(path, path)
+              mod = importlib.util.module_from_spec(spec)
+              try:
+                  spec.loader.exec_module(mod)
+                  print(f'OK: {path}')
+              except Exception as e:
+                  errors.append((path, e))
+                  print(f'FAIL: {path}: {e}')
+          sys.exit(1 if errors else 0)
+          "

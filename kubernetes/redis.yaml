@@ -1,0 +1,67 @@
+# Feast's online store (ADR-0006), now with real auth (ADR-0007's
+# Docker Compose Redis has none — this is the one place Milestone 8
+# deliberately diverges, since Kubernetes is where "secrets
+# management" actually needs a real secret to manage).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: fraud-detection
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-secrets
+                  key: redis-password
+          # $(REDIS_PASSWORD) here is Kubernetes' own container-level
+          # env-var substitution in command/args, not a shell feature
+          # — no wrapper script needed to keep the password out of the
+          # image/command string itself.
+          args: ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"]
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a $REDIS_PASSWORD ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a $REDIS_PASSWORD ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: fraud-detection
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

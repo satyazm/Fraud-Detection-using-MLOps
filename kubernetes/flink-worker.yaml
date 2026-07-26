@@ -1,0 +1,55 @@
+# The always-on PyFlink streaming job (ADR-0006): Kafka ->
+# transform_one() -> Feast push, running as a Deployment (not a Job —
+# it never terminates; --bounded is a test-only flag, not used here).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-worker
+  namespace: fraud-detection
+  labels:
+    app: flink-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink-worker
+  template:
+    metadata:
+      labels:
+        app: flink-worker
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: flink-worker
+          image: mloops-flink-worker:latest
+          imagePullPolicy: IfNotPresent # loaded into the kind node directly, not pulled from a registry
+          args:
+            - flink-worker
+            - --bootstrap-servers
+            - "$(KAFKA_BOOTSTRAP_SERVERS)"
+            - --topic
+            - "$(KAFKA_TOPIC)"
+          envFrom:
+            - configMapRef:
+                name: fraud-detection-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-detection-secrets
+                  key: redis-password
+          volumeMounts:
+            - name: feast-feature-store-config
+              mountPath: /app/feast_repo/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 500m
+              memory: 768Mi
+            limits:
+              cpu: 1
+              memory: 1536Mi
+      volumes:
+        - name: feast-feature-store-config
+          configMap:
+            name: feast-feature-store-config
