@@ -1,7 +1,9 @@
 .PHONY: install install-dev lint format typecheck test precommit clean \
 	ingest validate preprocess train evaluate \
 	kafka-up kafka-down redis-up redis-down infra-up infra-down flink-jar \
-	producer consumer feast-apply materialize flink-worker api
+	producer consumer feast-apply materialize flink-worker \
+	api ready api-build api-up api-down \
+	monitoring-up monitoring-down drift-report
 
 PYTHON := python3.11
 
@@ -98,6 +100,28 @@ materialize:
 flink-worker: flink-jar
 	fraud-detection flink-worker
 
-# --- Placeholder operational commands (wired up to real logic in later milestones) ---
+# --- Milestone 6: real-time inference API (FastAPI + Feast + MLflow) ---
 api:
 	fraud-detection api
+
+ready:
+	fraud-detection ready
+
+api-build:
+	docker compose build api
+
+api-up:
+	docker compose up -d api
+
+api-down:
+	docker compose down api
+
+# --- Milestone 7: observability (Prometheus + Grafana + Evidently AI) ---
+monitoring-up:
+	docker compose up -d prometheus redis-exporter cadvisor grafana
+
+monitoring-down:
+	docker compose down prometheus redis-exporter cadvisor grafana
+
+drift-report:
+	fraud-detection drift-report

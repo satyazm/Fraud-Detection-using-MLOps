@@ -2,13 +2,16 @@
 
 ## Status
 
-Milestones 1-5 are implemented: `common`, `domain`, `data`, `features`
-(including a real Feast + Redis integration), `models`, and `streaming`
+Milestones 1-7 are implemented: `common`, `domain`, `data`, `features`
+(including a real Feast + Redis integration), `models`, `streaming`
 (Kafka producer/consumer, plus a real PyFlink job computing features
-from the live stream — no model inference in the stream yet) are real.
-`serving` and `monitoring` are still scaffolding — this document
-records intent for them so those milestones have a target to build
-toward, and so deviations get captured as ADRs (see `docs/decisions/`).
+from the live stream), `api` (a FastAPI service scoring transactions
+via Feast online features + an MLflow Production model), and
+`monitoring` (Prometheus metrics, an Evidently AI data-drift report,
+and the live-prediction log it reads from) are all real. Milestone 8
+(Airflow, CI/CD, Kubernetes) has not started — this document records
+intent for it so that milestone has a target to build toward, and so
+deviations get captured as ADRs (see `docs/decisions/`).
 
 ## Layering (clean architecture)
 
@@ -24,14 +27,14 @@ layer's interface:
 | `features`  | One feature pipeline shared by offline training, online inference, and streaming (ADR-0003); Feast + Redis integration (ADR-0006) |
 | `models`    | Training, comparison, evaluation, MLflow tracking/registry |
 | `streaming` | Kafka producer/consumer sharing `domain.entities.Transaction` as the wire schema (ADR-0005); a PyFlink job computing features from the live stream via the same `FeaturePipeline` (ADR-0006) |
-| `serving`   | Inference API (FastAPI) that scores transactions            |
-| `monitoring`| Data/model drift and performance observability              |
+| `api`       | FastAPI inference service: Feast online features (never recomputed) + an MLflow Production model -> fraud probability (ADR-0007) |
+| `monitoring`| Prometheus metrics, the live-prediction log, and Evidently AI data-drift reports (ADR-0008) |
 | `utils`     | Generic, dependency-free helpers                            |
 
 Dependency direction runs one way, inward toward `domain`:
-`serving`/`streaming`/`monitoring` depend on `models` and `features`,
+`api`/`streaming`/`monitoring` depend on `models` and `features`,
 which depend on `data`, `domain`, and `common` — never the reverse.
-Boundary layers (`streaming`, `serving`) translate wire formats (Kafka
+Boundary layers (`streaming`, `api`) translate wire formats (Kafka
 JSON, HTTP bodies) into `domain` entities via `domain.schemas`, so
 `models`/`features` work with typed entities, not raw dicts. The wire
 contract itself is versioned in `data/contracts/transaction_schema.json`.
@@ -59,17 +62,27 @@ PaySim dataset
   streaming: producer -> Kafka -> flink-worker -----+
       |         (FeaturePipeline.transform_one() -> Feast push)
       v
-  serving (FastAPI: Feast lookup -> model.predict_proba())
-      |
-      v
-  monitoring (drift, performance, alerting) --> Prometheus/Grafana
+  api: Transaction -> Feast.read_online() -> MLflow Production model -> prediction
+      |            \
+      v              \--> monitoring.prediction_log (real logged requests)
+  /metrics --> Prometheus --> Grafana                    |
+      ^                                                    v
+      |                                     fraud-detection drift-report
+  redis-exporter, cadvisor                     (Evidently AI, vs. training data)
 ```
 
 The model is proven offline first (Milestones 2-3). The real-time
-feature platform (Milestone 5) proves Kafka -> features -> online store
-parity *before* wiring a model into that path — see ADR-0001 for how
-decisions like this are tracked, and ADR-0006 for Milestone 5's
-specifics (Feast, Redis, why local-execution PyFlink).
+feature platform (Milestone 5) proved Kafka -> features -> online store
+parity *before* wiring a model into that path (ADR-0006); Milestone 6
+wired the model in via `api`, reading the same online features rather
+than recomputing them; Milestone 7 added observability around that —
+see ADR-0001 for how decisions like this are tracked, ADR-0006 for
+Milestone 5's specifics (Feast, Redis, why local-execution PyFlink),
+ADR-0007 for Milestone 6's (Feast-or-error, Production-stage
+resolution, `/health` vs `/ready`), and ADR-0008 for Milestone 7's
+(which metrics and why, real vs. synthetic drift data, and what's
+deliberately not covered — Kafka broker metrics, ground-truth model
+performance).
 
 ## Configuration & logging
 
@@ -83,5 +96,13 @@ specifics (Feast, Redis, why local-execution PyFlink).
 
 `docker-compose.yml` at the repo root defines the target local stack.
 Kafka (+ Kafka UI) and Redis are live, used by `streaming/` and
-`features/`'s Feast integration respectively. MLflow, Prometheus, and
-Grafana remain scaffolding for later milestones.
+`features/`'s Feast integration respectively. The `api` service builds
+and runs the FastAPI inference service (`docker/Dockerfile.api`),
+pointing at the same local `mlruns/`/`feast_repo/` host-side commands
+already use (bind-mounted), not the separate `mlflow` server below —
+verified end to end (real build, real container, real `/predict` call
+against a real model), see ADR-0007. Prometheus (scraping the `api`
+service, `redis-exporter`, and `cadvisor`) and Grafana
+(auto-provisioned with a dashboard, no manual setup) are live too —
+see ADR-0008. Only the standalone `mlflow` tracking server remains
+scaffolding for a later milestone.

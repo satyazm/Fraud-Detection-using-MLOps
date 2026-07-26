@@ -45,6 +45,11 @@ ignore = [
     "E203", # whitespace before ':' (handled by black)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# TransactionRequest's fields intentionally match PaySim/Kafka's exact
+# wire field names (see domain.schemas) rather than snake_case aliases.
+"src/fraud_detection/api/schemas.py" = ["N815"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["fraud_detection"]
 
@@ -91,5 +96,6 @@ module = [
     "feast.*",
     "pyflink.*",
     "redis.*",
+    "evidently.*",
 ]
 ignore_missing_imports = true

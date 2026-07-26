@@ -1,4 +1,4 @@
-# Production runtime dependencies.
-# Identical to base for Phase 1; later phases will add serving/streaming
-# dependencies (e.g. FastAPI, Kafka client) here without touching dev tooling.
+# Production runtime dependencies. Identical to base — FastAPI/Kafka
+# client dependencies landed directly in base.txt (Milestones 4/6) since
+# every environment, not just prod, needs them.
 -r base.txt

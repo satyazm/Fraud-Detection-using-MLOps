@@ -7,15 +7,20 @@ Kafka (Milestone 4; no inference yet). `feast-apply`/`materialize`/
 `flink-worker` run the real-time feature platform (Milestone 5):
 register Feast definitions, push offline features into Redis, and run
 the PyFlink job that computes features from the live Kafka stream.
-`api` remains a placeholder — it logs which later milestone implements
-it — so the full operational surface is visible early.
+`api`/`ready` run and probe the real-time inference service (Milestone
+6): Feast online features -> MLflow Production model -> fraud
+probability. `drift-report` (Milestone 7) compares that training data
+against real logged `/predict` requests via Evidently AI.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
-from collections.abc import Callable, Sequence
+import urllib.error
+import urllib.request
+from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 
@@ -67,6 +72,18 @@ from fraud_detection.models.training import (
     select_best_run,
     train_and_compare,
 )
+from fraud_detection.monitoring.drift import (
+    DEFAULT_REFERENCE_SAMPLE_SIZE,
+    DriftReportError,
+    generate_drift_report,
+    load_reference_sample,
+)
+from fraud_detection.monitoring.drift import DEFAULT_REPORT_PATH as DEFAULT_DRIFT_REPORT_PATH
+from fraud_detection.monitoring.prediction_log import (
+    DEFAULT_LOG_PATH,
+    PredictionLogError,
+    load_predictions,
+)
 from fraud_detection.streaming.consumer import (
     DEFAULT_GROUP_ID,
     consume_transactions,
@@ -86,9 +103,8 @@ from fraud_detection.streaming.producer import (
 
 logger = get_logger("fraud_detection.cli")
 
-_PLACEHOLDER_PLANNED_IN = {
-    "api": "Milestone 6 (FastAPI Serving)",
-}
+DEFAULT_API_HOST = "0.0.0.0"
+DEFAULT_API_PORT = 8000
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
@@ -332,19 +348,73 @@ def _cmd_flink_worker(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_placeholder(command: str) -> int:
-    logger.info(
-        "command not yet implemented",
-        extra={"command": command, "planned_in": _PLACEHOLDER_PLANNED_IN[command]},
+def _cmd_api(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from fraud_detection.api.app import create_app
+
+    app = create_app(
+        model_name=args.registry_name,
+        tracking_uri=args.tracking_uri,
+        prediction_log_path=args.prediction_log_path,
     )
+    # log_config=None: skip uvicorn's own logging setup so "uvicorn"/
+    # "uvicorn.access" loggers fall back to propagating into the root
+    # logger this process already configured (configs/logging.yaml),
+    # instead of uvicorn installing a second, differently formatted
+    # (non-JSON) console handler.
+    uvicorn.run(app, host=args.host, port=args.port, log_config=None)
     return 0
 
 
-def _placeholder_handler(command: str) -> Callable[[argparse.Namespace], int]:
-    def handler(_args: argparse.Namespace) -> int:
-        return _run_placeholder(command)
+def _cmd_ready(args: argparse.Namespace) -> int:
+    url = f"http://{args.host}:{args.port}/ready"
+    try:
+        with urllib.request.urlopen(url, timeout=args.timeout) as response:
+            body = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError) as exc:
+        logger.error(
+            "readiness check failed: could not reach the API", extra={"url": url, "error": str(exc)}
+        )
+        return 1
 
-    return handler
+    logger.info("readiness check", extra={"url": url, **body})
+    return 0 if body.get("ready") else 1
+
+
+def _cmd_drift_report(args: argparse.Namespace) -> int:
+    try:
+        reference = load_reference_sample(args.raw_path, args.reference_sample_size)
+    except DataError as exc:
+        logger.error(
+            "drift report failed: could not load reference data", extra={"error": str(exc)}
+        )
+        return 1
+
+    try:
+        current = load_predictions(args.log_path)
+    except PredictionLogError as exc:
+        logger.error(
+            "drift report failed: no live predictions to compare against", extra={"error": str(exc)}
+        )
+        return 1
+
+    try:
+        summary = generate_drift_report(reference, current, output_path=args.output_path)
+    except DriftReportError as exc:
+        logger.error("drift report failed", extra={"error": str(exc)})
+        return 1
+
+    logger.info(
+        "drift report command complete",
+        extra={
+            "report_path": str(summary.report_path),
+            "drifted_columns": summary.drifted_columns,
+            "total_columns": summary.total_columns,
+            "drift_share": summary.drift_share,
+        },
+    )
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -465,11 +535,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     flink_worker_parser.set_defaults(func=_cmd_flink_worker)
 
-    for name, planned_in in _PLACEHOLDER_PLANNED_IN.items():
-        placeholder_parser = subparsers.add_parser(
-            name, help=f"[placeholder, arrives in {planned_in}]"
-        )
-        placeholder_parser.set_defaults(func=_placeholder_handler(name))
+    api_parser = subparsers.add_parser(
+        "api",
+        help="Run the FastAPI inference service (Feast features -> MLflow Production model)",
+    )
+    api_parser.add_argument("--host", type=str, default=DEFAULT_API_HOST)
+    api_parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
+    api_parser.add_argument("--registry-name", type=str, default=DEFAULT_MODEL_NAME)
+    api_parser.add_argument("--tracking-uri", type=str, default=DEFAULT_TRACKING_URI)
+    api_parser.add_argument("--prediction-log-path", type=Path, default=DEFAULT_LOG_PATH)
+    api_parser.set_defaults(func=_cmd_api)
+
+    ready_parser = subparsers.add_parser(
+        "ready", help="Probe a running `api` instance's /ready endpoint"
+    )
+    ready_parser.add_argument("--host", type=str, default="localhost")
+    ready_parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
+    ready_parser.add_argument("--timeout", type=float, default=5.0)
+    ready_parser.set_defaults(func=_cmd_ready)
+
+    drift_report_parser = subparsers.add_parser(
+        "drift-report",
+        help="Evidently AI data-drift report: training data vs. real logged /predict requests",
+    )
+    drift_report_parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
+    drift_report_parser.add_argument(
+        "--reference-sample-size", type=int, default=DEFAULT_REFERENCE_SAMPLE_SIZE
+    )
+    drift_report_parser.add_argument("--log-path", type=Path, default=DEFAULT_LOG_PATH)
+    drift_report_parser.add_argument("--output-path", type=Path, default=DEFAULT_DRIFT_REPORT_PATH)
+    drift_report_parser.set_defaults(func=_cmd_drift_report)
 
     return parser
 

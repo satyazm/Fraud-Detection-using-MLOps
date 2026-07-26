@@ -1,0 +1,30 @@
+# Prometheus scrape config for the local dev stack (Milestone 7).
+# Mounted into the `prometheus` service in docker-compose.yml.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # The FastAPI inference service's own metrics (api/routers.py's
+  # /metrics endpoint): prediction_requests_total, prediction_latency_seconds,
+  # prediction_errors_total, model_predictions_total, model_fraud_probability,
+  # redis_connection_status.
+  - job_name: fraud-detection-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  # Redis-level metrics (memory, connected clients, ops/sec, ...) — not
+  # the same thing as redis_connection_status above, which only says
+  # "can the API reach it," not "how is it doing."
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  # Per-container CPU/memory for the whole compose stack (kafka, redis,
+  # api, ...). No Kafka broker (JMX) metrics — that needs a separate
+  # JMX exporter attached to Kafka's JVM, a meaningfully bigger piece
+  # of infra deliberately left out of this milestone's scope; see
+  # docs/decisions/0008-monitoring.md.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

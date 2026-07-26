@@ -23,6 +23,7 @@ from typing import Any
 
 import pandas as pd
 from feast import FeatureStore as FeastClient
+from redis.exceptions import RedisError
 
 from fraud_detection.features.feature_store import FeatureStoreError
 from fraud_detection.features.registry import feature_names
@@ -46,6 +47,24 @@ class FeastFeatureStore:
         self._feature_view = feature_view
         self._entity_join_key = entity_join_key
         self._feature_refs = [f"{feature_view}:{name}" for name in feature_names()]
+
+    def online_store_address(self) -> tuple[str, int]:
+        """Host/port Feast is actually configured to reach Redis at.
+
+        Parsed from the same `feature_store.yaml` Feast itself loaded
+        (`connection_string`, e.g. `"redis:6379"` or
+        `"localhost:6379,db=0"`) — the single source of truth for where
+        Redis is, rather than a second hardcoded host/port a caller
+        could keep separately and let drift out of sync. That drift is
+        exactly what happened before this existed: the API's `/ready`
+        check hardcoded "localhost:6379" for its live Redis probe, which
+        was wrong inside a container where Feast itself was correctly
+        configured for "redis:6379" — `/ready` reported `redis_reachable:
+        false` even though Feast could reach Redis fine.
+        """
+        connection_string = self._client.config.online_store.connection_string
+        host, port = connection_string.split(",")[0].split(":")
+        return host, int(port)
 
     def write_offline_batch(self, df: pd.DataFrame) -> None:
         """Persist `df` as this store's Feast FileSource.
@@ -80,10 +99,18 @@ class FeastFeatureStore:
         )
 
     def read_online(self, entity_id: str) -> dict[str, Any]:
-        response = self._client.get_online_features(
-            features=self._feature_refs,
-            entity_rows=[{self._entity_join_key: entity_id}],
-        ).to_dict()
+        """Raises `FeatureStoreError` both when Redis has no entry for
+        `entity_id` and when Redis itself can't be reached — callers
+        (e.g. the API's `PredictionService`) need exactly one exception
+        type to handle "features aren't available right now", not two.
+        """
+        try:
+            response = self._client.get_online_features(
+                features=self._feature_refs,
+                entity_rows=[{self._entity_join_key: entity_id}],
+            ).to_dict()
+        except RedisError as exc:
+            raise FeatureStoreError(f"Could not reach the online store (Redis): {exc}") from exc
 
         values = {name: response[name][0] for name in feature_names()}
         if all(value is None for value in values.values()):

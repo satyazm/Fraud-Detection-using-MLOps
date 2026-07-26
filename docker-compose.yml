@@ -1,8 +1,11 @@
 # Local development infrastructure for the fraud detection platform.
 #
-# kafka + kafka-ui (Milestone 4) and redis (Milestone 5, as Feast's
-# online store) are live. mlflow/prometheus/grafana remain scaffolding
-# for later milestones. Bring individual services up as needed, e.g.:
+# kafka + kafka-ui (Milestone 4), redis (Milestone 5, as Feast's online
+# store), api (Milestone 6), and prometheus + redis-exporter + cadvisor
+# + grafana (Milestone 7, observability) are live. The standalone
+# mlflow tracking server remains scaffolding — the api service reads
+# the local mlruns/ file store directly instead (ADR-0007). Bring
+# individual services up as needed, e.g.:
 # `docker compose up kafka kafka-ui redis`, or `make infra-up`.
 
 services:
@@ -88,14 +91,47 @@ services:
     volumes:
       - mlflow-data:/mlflow
 
+  # Scrapes the api service's /metrics, redis-exporter, and cadvisor —
+  # see docker/prometheus.yml. Milestone 7.
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: fraud-prometheus
     ports:
       - "9090:9090"
-    # Mount a scrape config once monitoring/ exposes metrics endpoints:
-    # volumes:
-    #   - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  # Real Redis-level metrics (memory, ops/sec, connected clients, ...),
+  # not just the API's own up/down probe. Milestone 7.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: fraud-redis-exporter
+    environment:
+      REDIS_ADDR: "redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Per-container CPU/memory for the whole compose stack. No Kafka
+  # broker (JMX) metrics — see docker/prometheus.yml. Milestone 7.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: fraud-cadvisor
+    privileged: true
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      # Without the socket explicitly, cAdvisor only sees raw cgroup
+      # paths (/docker/<hash>) — confirmed: container_cpu_usage_seconds_total
+      # had no `name` label at all until this was added, so the
+      # dashboard's `name=~"fraud-.*"` panels matched nothing.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -106,17 +142,67 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
-  # api:
-  #   Uncomment once src/fraud_detection/serving/ exposes a FastAPI app.
-  #   build:
-  #     context: .
-  #     dockerfile: docker/Dockerfile.api
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - redis
-  #     - mlflow
+  # Real-time inference API (Milestone 6). Points at the same local
+  # mlruns/ file store and feast_repo/ that host-side `train`/
+  # `feast-apply`/`materialize` already use, not the separate `mlflow`
+  # HTTP server above — that server remains unused scaffolding until a
+  # future milestone points training at it too. Verified end to end
+  # (real build, real container, real /predict call against a real
+  # model) — see docs/decisions/0007-fastapi-inference-service.md for
+  # what that took (four real bugs, none visible from static review).
+  #
+  # One-time host-side setup before `docker compose up api`:
+  # `make feast-apply` (writes feast_repo/registry.db, bind-mounted in)
+  # and a model promoted to the "Production" stage in mlruns/ (see
+  # README's "Real-time inference API" section).
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: fraud-api
+    ports:
+      - "8000:8000"
+    command:
+      [
+        "python", "-m", "fraud_detection.cli", "api",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--tracking-uri", "file:${PWD}/mlruns",
+      ]
+    volumes:
+      # MLflow's local file store bakes the *absolute host path* into
+      # each run's meta.yaml as its artifact_uri at training time
+      # (confirmed: `file:///Users/.../mlruns/<exp>/<run>/artifacts`)
+      # — mounting mlruns/ at a different path (e.g. /app/mlruns) makes
+      # mlflow.sklearn.load_model() look in the wrong place and fail
+      # with a host-path "No such file or directory". Mounting at the
+      # identical ${PWD}-based path, and pointing --tracking-uri at the
+      # same path, sidesteps that entirely — verified against a real
+      # build; a same-different-path mount reproduced the failure.
+      # Not :ro: mlflow.sklearn.load_model() writes a small
+      # `registered_model_meta` marker into the artifact directory even
+      # on a read (confirmed: a read-only mount here failed with
+      # "[Errno 30] Read-only file system" on that exact file).
+      - ${PWD}/mlruns:${PWD}/mlruns
+      - ./feast_repo:/app/feast_repo:ro
+      # Real-time log of served predictions (monitoring/prediction_log.py)
+      # — bind-mounted, not left in the container's own filesystem, so
+      # `fraud-detection drift-report` run on the host (or `make
+      # drift-report`) can see traffic the containerized API served, and
+      # it survives `docker compose down`/`up`.
+      - ./data/monitoring:/app/data/monitoring
+      # "localhost:6379" (feast_repo/feature_store.yaml) is correct for
+      # host-side flink-worker/materialize/tests but unreachable from
+      # inside this container — same reason the kafka service above
+      # needs two listeners. Swap in the compose network's Redis
+      # service name.
+      - ./docker/feature_store.docker.yaml:/app/feast_repo/feature_store.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   kafka-data:

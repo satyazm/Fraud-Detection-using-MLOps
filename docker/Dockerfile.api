@@ -1,0 +1,54 @@
+# Real-time inference API (Milestone 6): FastAPI service scoring
+# transactions via Feast online features + an MLflow Production model.
+#
+# Installs the full requirements/prod.txt, not a slimmed-down subset,
+# so this image matches exactly what `make install` builds locally —
+# see requirements/base.txt for why apache-flink (a base.txt dependency
+# even though this image never imports pyflink) needs the
+# setuptools<81 + --no-build-isolation two-step. The API never
+# constructs a PyFlink StreamExecutionEnvironment (only
+# streaming/flink_job.py does), so no JDK is needed here — see
+# docs/decisions/0006-feast-redis-flink.md.
+#
+# Runs via `python -m fraud_detection.cli` (PYTHONPATH), not
+# `pip install .`: fraud_detection.common.config.PROJECT_ROOT is
+# derived from `__file__`, three parents up from
+# src/fraud_detection/common/ — that only resolves to the real project
+# root (containing configs/, feast_repo/) when the package runs from
+# its source tree, not when setuptools copies it into site-packages via
+# a non-editable install.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# apache-beam (pulled in by apache-flink) compiles a C extension
+# (coder_impl_fast.c) at install time — python:3.11-slim has no C
+# toolchain by default (unlike a host dev machine with Xcode/Homebrew
+# already present). `gcc` alone isn't enough here either: without
+# libc6-dev (part of build-essential) the compile fails on a missing
+# stdlib.h, not a missing compiler.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir "setuptools<81" \
+    && pip install --no-cache-dir --no-build-isolation -r requirements/prod.txt
+
+COPY configs/ configs/
+COPY feast_repo/ feast_repo/
+COPY src/ src/
+
+ENV PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1
+
+RUN useradd --create-home --uid 1000 fraud-detection \
+    && chown -R fraud-detection:fraud-detection /app
+USER fraud-detection
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=5 \
+    CMD python -m fraud_detection.cli ready --host localhost --port 8000 || exit 1
+
+CMD ["python", "-m", "fraud_detection.cli", "api", "--host", "0.0.0.0", "--port", "8000"]

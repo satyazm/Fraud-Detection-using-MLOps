@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from fraud_detection.cli import main
+from fraud_detection.cli import _cmd_api, build_parser, main
 from fraud_detection.streaming.flink_job import DEFAULT_KAFKA_CONNECTOR_JAR
 
 
@@ -48,10 +48,6 @@ requires_flink_stack = pytest.mark.skipif(
         "(`docker compose up kafka redis`, JAVA_HOME set, `make flink-jar`)"
     ),
 )
-
-
-def test_placeholder_commands_exit_cleanly():
-    assert main(["api"]) == 0
 
 
 def test_missing_command_is_a_usage_error():
@@ -305,3 +301,78 @@ def test_flink_worker_command_end_to_end(sample_transactions_df, tmp_path):
         ]
     )
     assert flink_exit == 0
+
+
+def test_api_command_parses_arguments():
+    # Not run via main(): _cmd_api calls uvicorn.run(), which blocks
+    # serving forever — the CLI/HTTP wiring is covered live by
+    # tests/api/test_routers.py and test_integration.py instead. This
+    # only checks argparse wires the flags to the right defaults/handler.
+    parser = build_parser()
+
+    args = parser.parse_args(["api", "--host", "127.0.0.1", "--port", "9001"])
+
+    assert args.host == "127.0.0.1"
+    assert args.port == 9001
+    assert args.func is _cmd_api
+
+
+def test_api_command_default_host_and_port():
+    parser = build_parser()
+
+    args = parser.parse_args(["api"])
+
+    assert args.host == "0.0.0.0"
+    assert args.port == 8000
+
+
+def test_ready_command_returns_nonzero_when_unreachable():
+    exit_code = main(["ready", "--host", "127.0.0.1", "--port", "1", "--timeout", "1"])
+
+    assert exit_code == 1
+
+
+def test_drift_report_command_fails_cleanly_when_nothing_logged(tmp_path):
+    exit_code = main(
+        [
+            "drift-report",
+            "--log-path",
+            str(tmp_path / "no-such-log.jsonl"),
+            "--output-path",
+            str(tmp_path / "report.html"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (tmp_path / "report.html").exists()
+
+
+def test_drift_report_command_end_to_end(tmp_path, sample_transactions_df):
+    from fraud_detection.domain.schemas import transaction_from_dict
+    from fraud_detection.monitoring.prediction_log import append_prediction
+
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+
+    log_path = tmp_path / "prediction_log.jsonl"
+    for _, row in sample_transactions_df.head(10).iterrows():
+        transaction = transaction_from_dict(row.to_dict())
+        append_prediction(transaction, 0, 0.01, "1", log_path=log_path)
+
+    output_path = tmp_path / "report.html"
+    exit_code = main(
+        [
+            "drift-report",
+            "--raw-path",
+            str(csv_path),
+            "--reference-sample-size",
+            "50",
+            "--log-path",
+            str(log_path),
+            "--output-path",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert output_path.exists()

@@ -42,10 +42,12 @@ data/raw/*
 data/processed/*
 data/sample/*
 data/feast/*
+data/monitoring/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/sample/.gitkeep
 !data/feast/.gitkeep
+!data/monitoring/.gitkeep
 
 # --- Flink (downloaded JARs, not vendored) ---
 .flink-jars/
@@ -53,6 +55,12 @@ data/feast/*
 # --- Feast (generated registry) ---
 feast_repo/registry.db
 feast_repo/.feast_registry_lock
+
+# --- Evidently AI drift report (generated; Evidently's self-contained
+# HTML embeds plotly.js, routinely multiple MB — exceeds this repo's
+# own check-added-large-files cap of 1MB, unlike the small markdown
+# reports docs/data_report.md and docs/model_report.md) ---
+docs/drift_report.html
 
 # --- ML / experiment artifacts (for later phases) ---
 mlruns/

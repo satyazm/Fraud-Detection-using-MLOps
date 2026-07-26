@@ -33,3 +33,19 @@ confluent-kafka==2.15.0
 # embeds a local Flink mini-cluster via a JVM gateway.
 feast[redis]==0.65.0
 apache-flink==2.3.0
+
+# Milestone 6: FastAPI real-time inference service. Already present
+# transitively (feast bundles its own FastAPI/uvicorn-based feature
+# server), pinned explicitly here since Milestone 6 depends on them
+# directly, not just through feast.
+fastapi==0.140.0
+uvicorn==0.34.0
+
+# Milestone 7: observability (Prometheus metrics, Evidently AI drift
+# reports). prometheus_client was already present transitively (same
+# reason fastapi/uvicorn were); evidently is a new, heavy dependency
+# (pulls in litestar, plotly, statsmodels, nltk, ...) but installed
+# clean — verified with `pip check` against every existing pin
+# (numpy/pandas/pyarrow/sklearn/xgboost/lightgbm/mlflow), no conflicts.
+prometheus_client==0.24.1
+evidently==0.7.21

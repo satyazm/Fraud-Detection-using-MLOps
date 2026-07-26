@@ -29,5 +29,14 @@ repos:
         additional_dependencies:
           - types-PyYAML==6.0.12.20240917
           - pandas-stubs==2.2.3.241009
+          # fastapi/pydantic/uvicorn/prometheus_client ship their own
+          # types (unlike mlflow/feast/pyflink/redis, which are
+          # ignore_missing_imports'd in pyproject.toml) — the mypy
+          # hook runs in its own isolated env, so they must be listed
+          # here too or it can't resolve them at all.
+          - fastapi==0.140.0
+          - pydantic==2.13.4
+          - uvicorn==0.34.0
+          - prometheus_client==0.24.1
         args: ["--config-file=pyproject.toml"]
         files: ^src/

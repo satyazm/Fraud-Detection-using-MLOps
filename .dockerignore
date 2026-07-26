@@ -1,0 +1,23 @@
+# Keep the build context small — Dockerfile.api only COPYs
+# requirements/, configs/, feast_repo/, src/ explicitly, but Docker
+# still scans everything below before applying that filter.
+.venv/
+venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Large/generated, not needed to build the image (mounted at runtime
+# instead where the container actually needs them — see docker-compose.yml).
+data/raw/*
+data/processed/*
+data/sample/*
+mlruns/
+.flink-jars/
+
+docs/images/

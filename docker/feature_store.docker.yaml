@@ -1,0 +1,17 @@
+# Container-only override of feast_repo/feature_store.yaml, bind-mounted
+# over it for the `api` docker-compose service only. Identical except
+# `connection_string`: "localhost:6379" is correct for host-side
+# `flink-worker`/`materialize`/tests (see feast_repo/feature_store.yaml)
+# but unreachable from inside a container on the compose network — the
+# same reason the `kafka` service in docker-compose.yml needs two
+# listeners (PLAINTEXT vs PLAINTEXT_INTERNAL). "redis" here is the
+# compose service name, resolved via Docker's internal DNS.
+project: fraud_detection
+provider: local
+registry: registry.db
+online_store:
+  type: redis
+  connection_string: "redis:6379"
+offline_store:
+  type: file
+entity_key_serialization_version: 3
