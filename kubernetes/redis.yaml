@@ -2,6 +2,14 @@
 # Docker Compose Redis has none — this is the one place Milestone 8
 # deliberately diverges, since Kubernetes is where "secrets
 # management" actually needs a real secret to manage).
+#
+# A real bug, found the hard way: this had no volume at first either
+# (same story as kafka.yaml) — a pod restart under host memory
+# pressure silently emptied the online store (confirmed via
+# `redis-cli DBSIZE` reporting 0 after materialized features had
+# already been written). `redis-data` below persists /data across
+# restarts, the same path docker-compose.yml's `redis-data` volume
+# already uses.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,6 +19,8 @@ metadata:
     app: redis
 spec:
   replicas: 1
+  strategy:
+    type: Recreate # single ReadWriteOnce volume — never run two redis pods at once
   selector:
     matchLabels:
       app: redis
@@ -53,6 +63,24 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: fraud-detection
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

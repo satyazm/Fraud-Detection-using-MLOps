@@ -35,6 +35,41 @@ and have to be added once per cluster: `ingress-nginx` (for
 scaling) — both called out directly in the affected manifests'
 comments rather than assumed.
 
+### `kafka`/`redis` need real volumes, not just a Deployment
+
+**A real bug, found doing exactly this kind of "does it actually still
+work" verification pass**: neither `kafka.yaml` nor `redis.yaml`
+mounted any volume at all — both wrote to the container's own
+ephemeral filesystem. A pod restart (the kubelet recreating one under
+host memory pressure, not even a deliberate action — several pods
+restarted during an earlier resource-pressure incident) silently wiped
+both: `flink-worker` started crash-looping with
+`UnknownTopicOrPartitionException` for the `transactions` topic
+`producer-job` had already created and populated hours earlier, and
+`redis-cli DBSIZE` against the cluster's Redis reported `0` despite
+Airflow's `daily_feature_materialization` DAG having "already" written
+real feature rows — to Docker Compose's *separate* Redis instance, it
+turned out, a mix-up surfaced by this same investigation (the two
+environments' Redis instances are entirely independent; nothing in the
+Kubernetes deployment had ever actually pushed features into *this*
+one before).
+
+Fixed by giving both a `PersistentVolumeClaim` at the same paths
+`docker-compose.yml` already persists to (`/var/lib/kafka/data`,
+`/data`) and a `Recreate` deployment strategy (same reasoning as
+`mlflow.yaml`'s — a single `ReadWriteOnce` volume can't be attached to
+two pods at once). Verified for real, not just applied: re-ran
+`producer-job` to recreate the topic, deleted the crash-looping
+`flink-worker` pod to force an immediate retry rather than wait out its
+backoff, watched it start processing and `redis-cli DBSIZE` climb to
+`200` (matching `producer-job`'s `--limit 200` exactly), sent a real
+`/predict` request for one of those exact transactions
+(`{"prediction":1,"fraud_probability":0.9999...}`, correctly matching
+that row's real `isFraud=1` label), then deleted both the `kafka` and
+`redis` pods again to prove the fix: `DBSIZE` still `200` after Redis
+came back, `flink-worker` reconnected with zero restarts (topic still
+there), and the same `/predict` call still succeeded.
+
 ### MLflow on Kubernetes: `--serve-artifacts`, not `--default-artifact-root`
 
 **A real bug, found running the actual training-job Job**: the MLflow
@@ -126,7 +161,11 @@ the same way. All three DAGs now run to a real, verified completion:
 `monthly_drift_report` writes a real `docs/drift_report.html`,
 `weekly_retraining` registers a new model version, and
 `daily_feature_materialization` writes real feature rows into Redis
-(confirmed via `redis-cli KEYS`/`DBSIZE` before and after).
+(confirmed via `redis-cli KEYS`/`DBSIZE` before and after) — Docker
+Compose's Redis, since this DAG runs on the Compose network, entirely
+separate from the Kubernetes cluster's own Redis (see the
+`kafka`/`redis` persistence bug above for exactly the confusion this
+distinction caused once).
 
 ### CI: `kubeconform`, not `kubectl apply --dry-run`
 
@@ -177,7 +216,9 @@ here rather than left to look finished by omission.
   `redis.yaml`, `kafka.yaml`, `mlflow.yaml`, `api.yaml`,
   `flink-worker.yaml`, `jobs.yaml`, `hpa.yaml`, `ingress.yaml`,
   `prometheus.yaml`, `grafana.yaml`, `kind-cluster.yaml` — all applied
-  and verified against a real cluster, not just written.
+  and verified against a real cluster, not just written. `kafka.yaml`
+  and `redis.yaml` gained their own `PersistentVolumeClaim`s
+  (`kafka-data`, `redis-data`) after the bug above.
 - `docker/Dockerfile.worker`, `docker/Dockerfile.flink-worker`: new
   images backing the K8s Jobs/Deployment and Airflow's `DockerOperator`
   tasks.

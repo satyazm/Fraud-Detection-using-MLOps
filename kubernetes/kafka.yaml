@@ -6,6 +6,15 @@
 # consumer of Kafka in this Kubernetes deployment is itself a pod (the
 # producer Job, the flink-worker Deployment), so one in-cluster
 # listener is enough — see docs/decisions/0009-deployment-and-operations.md.
+#
+# A real bug, found the hard way: this had no volume at all at first.
+# A pod restart (kubelet evicting/recreating it under host memory
+# pressure, not even a deliberate action) silently wiped every topic —
+# confirmed via flink-worker crash-looping afterward with
+# UnknownTopicOrPartitionException for a topic producer-job had
+# already created and populated hours earlier. `kafka-data` below
+# persists /var/lib/kafka/data across restarts, the same path
+# docker-compose.yml's `kafka-data` volume already uses.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,6 +24,8 @@ metadata:
     app: kafka
 spec:
   replicas: 1
+  strategy:
+    type: Recreate # single ReadWriteOnce volume — never run two kafka pods at once
   selector:
     matchLabels:
       app: kafka
@@ -91,6 +102,24 @@ spec:
             limits:
               cpu: 1
               memory: 1Gi
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+      volumes:
+        - name: kafka-data
+          persistentVolumeClaim:
+            claimName: kafka-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-data
+  namespace: fraud-detection
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
 ---
 apiVersion: v1
 kind: Service
