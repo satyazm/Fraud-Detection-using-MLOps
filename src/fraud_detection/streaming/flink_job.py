@@ -81,9 +81,30 @@ class _ComputeAndPushFeatures(MapFunction):  # type: ignore[misc]  # MapFunction
         except InvalidTransactionError as exc:
             return f"SKIPPED invalid message: {exc}"
 
-        features = self._pipeline.transform_one(transaction)  # type: ignore[attr-defined]
         entity_id = compute_entity_id(transaction)
-        self._store.write_online(entity_id, features)  # type: ignore[attr-defined]
+        try:
+            features = self._pipeline.transform_one(transaction)  # type: ignore[attr-defined]
+            self._store.write_online(entity_id, features)  # type: ignore[attr-defined]
+        except Exception as exc:
+            # A real bug, found running this in Kubernetes: this had no
+            # handling at all — a single transient failure (a Redis
+            # write blip, anything) propagated straight through PyFlink
+            # and killed the *entire* streaming job, not just this one
+            # record. Worse than it sounds: `run_flink_worker` enables
+            # no checkpointing, and the Kafka source starts from
+            # `earliest()`, so every restart replayed the whole topic
+            # from scratch and could hit the exact same failure again —
+            # a genuine crash-loop trigger, not just wasted reprocessing.
+            # Broad `except Exception` is deliberate at this specific
+            # per-record boundary (mirroring the InvalidTransactionError
+            # handling above): a long-running stream processor should
+            # never let one bad/unlucky record take the whole job down,
+            # and the failure is still logged, not silently dropped.
+            logger.error(
+                "failed to compute/push features for record",
+                extra={"entity_id": entity_id, "error": str(exc)},
+            )
+            return f"SKIPPED processing error for entity_id={entity_id}: {exc}"
 
         return f"OK entity_id={entity_id} name_orig={transaction.name_orig}"
 

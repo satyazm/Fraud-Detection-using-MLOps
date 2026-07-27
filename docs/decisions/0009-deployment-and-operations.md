@@ -235,6 +235,53 @@ resolving the stale address minutes after the visible setting had
 changed. Fixed by also tracking which `bootstrap_servers` the cached
 producer was built with and recreating it on a mismatch.
 
+### `flink-worker`'s crash-loop: no fault isolation around the Feast write
+
+`flink-worker` had a standing tendency to crash-loop, predating any of
+the changes above (it had already restarted several times before this
+milestone's own work began). Root cause, found by reading
+`streaming.flink_job._ComputeAndPushFeatures.map()`: only
+`InvalidTransactionError` (from deserializing a malformed Kafka
+message) was caught. `FeaturePipeline.transform_one()` and
+`FeastFeatureStore.write_online()` — the Feast/Redis write — had no
+exception handling at all, and `write_online()` doesn't wrap its
+errors the way `read_online()` does. Any transient failure there (a
+Redis blip, a connection reset — exactly the kind of thing more likely
+during the resource-pressure incidents this milestone's testing
+produced) propagated straight up through PyFlink and killed the
+*entire* streaming job, not just that one record.
+
+Worse than a single crash: `run_flink_worker()` enables no Flink
+checkpointing, and the Kafka source starts from
+`KafkaOffsetsInitializer.earliest()`. With no checkpointed offsets to
+resume from, every restart replays the *entire* topic from the
+beginning — so a failure triggered once by real conditions (e.g. Redis
+under memory pressure) would likely be triggered again by the replay
+hitting the same point under similar conditions, a genuine
+self-perpetuating crash loop, not just wasted reprocessing.
+
+Fixed by wrapping the transform+write step in its own `try/except`,
+mirroring the existing `InvalidTransactionError` handling: log the
+failure with the entity id and skip that one record, exactly like a
+malformed message already did, rather than taking the whole job down.
+Deliberately a broad `except Exception` at this one specific per-record
+boundary — the job's whole reason to exist is to keep running, and the
+failure is still logged (structured JSON, visible in `kubectl logs`
+and any log aggregation), not silently dropped.
+
+Verified two ways, not just read as a diff: a new unit test
+(`tests/streaming/test_flink_job_map_function.py`) exercises
+`_ComputeAndPushFeatures.map()` directly with a store whose
+`write_online` raises, confirming the failure is caught and the record
+skipped, and — since this host has no working JVM (only macOS's
+`java` stub, which fools both this test file's and `test_flink_job.py`'s
+`shutil.which("java")` skip-check into thinking Java is available,
+itself a pre-existing gap, not something this fix touches) — the
+real fix was rebuilt into `mloops-flink-worker:latest`, reloaded into
+`kind`, and rolled out; the new pod started clean and a real
+`/predict` call against a transaction it had just streamed still
+succeeded.
+
 ### Not covered by this milestone: stress testing
 
 The Milestone 8 brief also named stress testing; this pass covers
@@ -265,3 +312,7 @@ here rather than left to look finished by omission.
   `validate-k8s-manifests` (`kubeconform`), `validate-airflow-dags`.
 - `dashboard/app.py`: a local-only live demo, `streamlit` added to
   `requirements/dev.txt` (not installed by any deployed image).
+- `src/fraud_detection/streaming/flink_job.py`: per-record fault
+  isolation around the Feast write, fixing `flink-worker`'s crash-loop
+  tendency; new unit test coverage in
+  `tests/streaming/test_flink_job_map_function.py`.
