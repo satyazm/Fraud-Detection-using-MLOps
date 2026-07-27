@@ -201,6 +201,40 @@ green CI run to the running `kind` cluster stays a deliberate, manual
 treats "no fake work" everywhere else (ADR-0006's "CI stays
 infra-free," ADR-0008's "left out, not hidden").
 
+### `dashboard/app.py`: a live demo, and two more real bugs it found
+
+A Streamlit dashboard, not part of any deployed service, that streams
+real PaySim rows through the actual pipeline (publishes to Kafka via
+`streaming.serializer`/`domain.schemas` — this project's own
+wire-format code, not a reimplementation) and scores each one via the
+deployed API's `/predict`, showing the result next to PaySim's
+ground-truth `isFraud` label and running accuracy/precision/recall/F1.
+Verified live in a real browser, not just read as code: streamed 62
+real transactions, watched Scored/Accuracy/the confusion matrix update
+in real time, including one genuine false negative (94-97% recall
+across the run, not a suspicious flat 100%).
+
+**A real bug, found the moment it tried to publish**: Kafka's single
+listener (`kafka.yaml`) only advertises its in-cluster DNS name
+(`kafka:9092`). `kubectl port-forward` proxies the *bootstrap*
+connection fine, but Kafka's client protocol then reconnects directly
+to whatever address the broker advertises in its metadata response —
+which the host can't resolve. Confirmed via `rdkafka` logs:
+`kafka:9092/1: Failed to resolve 'kafka:9092'`. Fixed with a second
+`EXTERNAL` listener advertised as `localhost:9094`, mirroring
+docker-compose.yml's own PLAINTEXT (host) + PLAINTEXT_INTERNAL
+(containers) split — the same fix, for the same reason, the moment a
+second kind of non-pod consumer showed up.
+
+**A second real bug, in the dashboard's own code**: its Kafka
+`Producer` was cached in `st.session_state` keyed only on "does one
+exist yet," so changing the bootstrap-servers setting (or its default,
+while fixing the bug above) kept silently publishing through the
+*old*, now-broken connection — confirmed via `rdkafka` logs still
+resolving the stale address minutes after the visible setting had
+changed. Fixed by also tracking which `bootstrap_servers` the cached
+producer was built with and recreating it on a mismatch.
+
 ### Not covered by this milestone: stress testing
 
 The Milestone 8 brief also named stress testing; this pass covers
@@ -218,12 +252,16 @@ here rather than left to look finished by omission.
   `prometheus.yaml`, `grafana.yaml`, `kind-cluster.yaml` — all applied
   and verified against a real cluster, not just written. `kafka.yaml`
   and `redis.yaml` gained their own `PersistentVolumeClaim`s
-  (`kafka-data`, `redis-data`) after the bug above.
+  (`kafka-data`, `redis-data`) after the bug above; `kafka.yaml` later
+  gained a second `EXTERNAL` listener (port 9094) after the dashboard
+  bug below.
 - `docker/Dockerfile.worker`, `docker/Dockerfile.flink-worker`: new
   images backing the K8s Jobs/Deployment and Airflow's `DockerOperator`
   tasks.
 - `airflow/docker-compose.yml`, `airflow/dags/*.py`: a real, separately
   run orchestration stack, all three DAGs verified end to end.
 - `.github/workflows/ci.yml`: `lint-and-test` now also covers
-  `airflow/dags`; three new jobs — `build-images`,
+  `airflow/dags` and `dashboard`; three new jobs — `build-images`,
   `validate-k8s-manifests` (`kubeconform`), `validate-airflow-dags`.
+- `dashboard/app.py`: a local-only live demo, `streamlit` added to
+  `requirements/dev.txt` (not installed by any deployed image).

@@ -12,3 +12,8 @@ pre-commit==3.8.0
 
 # Milestone 6: fastapi.testclient.TestClient requires httpx.
 httpx==0.28.1
+
+# Milestone 8: dashboard/app.py, a local-only live demo dashboard —
+# not used by any deployed image (Dockerfile.api/.worker don't install
+# dev.txt), verified conflict-free via `pip check`.
+streamlit==1.60.0

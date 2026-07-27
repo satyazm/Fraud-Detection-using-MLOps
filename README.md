@@ -657,6 +657,16 @@ their containers at 1.5GB — see ADR-0009 for exactly why (the full
 file threatens the whole Docker Desktop VM this stack and `kind` share,
 not just the one task).
 
+## Live demo dashboard
+
+`dashboard/app.py` (`streamlit run dashboard/app.py`) streams real
+PaySim transactions through the actual Kubernetes pipeline (Kafka ->
+`flink-worker` -> Feast/Redis), scores each one via the deployed API's
+`/predict`, and shows the prediction next to PaySim's own ground-truth
+`isFraud` label plus running accuracy/precision/recall/F1 and a
+confusion matrix — see `dashboard/README.md` for setup (needs a Kafka
+port-forward) and ADR-0009 for two real bugs this surfaced.
+
 ## Roadmap
 
 - **Milestone 1 (done):** Foundation — scaffold, tooling, config,

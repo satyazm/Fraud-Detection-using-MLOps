@@ -23,10 +23,10 @@ jobs:
           pip install --no-build-isolation -e .
 
       - name: Lint (ruff)
-        run: ruff check src tests feast_repo airflow/dags
+        run: ruff check src tests feast_repo airflow/dags dashboard
 
       - name: Format check (black)
-        run: black --check src tests feast_repo airflow/dags
+        run: black --check src tests feast_repo airflow/dags dashboard
 
       - name: Type check (mypy)
         run: mypy src

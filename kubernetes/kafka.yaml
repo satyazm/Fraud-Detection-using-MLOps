@@ -1,11 +1,20 @@
 # Single-node KRaft broker (no ZooKeeper), same image and KRaft
-# settings as docker-compose.yml's kafka service — simplified to one
-# listener: docker-compose needed PLAINTEXT (host) + PLAINTEXT_INTERNAL
-# (containers) because host-side Python (the CLI producer/consumer)
-# and containers needed different addresses for the same broker. Every
-# consumer of Kafka in this Kubernetes deployment is itself a pod (the
-# producer Job, the flink-worker Deployment), so one in-cluster
-# listener is enough — see docs/decisions/0009-deployment-and-operations.md.
+# settings as docker-compose.yml's kafka service. Originally one
+# listener only: every consumer in this Kubernetes deployment was
+# itself a pod (the producer Job, the flink-worker Deployment), so one
+# in-cluster listener was enough. That stopped being true once
+# dashboard/app.py needed to publish from the host (via `kubectl
+# port-forward`) — `kubectl port-forward` only proxies the initial
+# bootstrap connection; Kafka's client protocol then reconnects
+# directly to whatever address the broker *advertises*, and a
+# single-listener broker only advertises its in-cluster DNS name
+# ("kafka:9092"), which the host can't resolve. Confirmed the hard
+# way: `kafka:9092/1: Failed to resolve 'kafka:9092'` from a host
+# process going through a live port-forward. Fixed with a second
+# `EXTERNAL` listener advertised as `localhost:9094`, mirroring
+# docker-compose.yml's own PLAINTEXT (host) + PLAINTEXT_INTERNAL
+# (containers) split for exactly the same reason — see
+# docs/decisions/0009-deployment-and-operations.md.
 #
 # A real bug, found the hard way: this had no volume at all at first.
 # A pod restart (kubelet evicting/recreating it under host memory
@@ -40,17 +49,18 @@ spec:
           image: confluentinc/cp-kafka:7.6.1
           ports:
             - containerPort: 9092
+            - containerPort: 9094
           env:
             - name: KAFKA_NODE_ID
               value: "1"
             - name: KAFKA_PROCESS_ROLES
               value: "broker,controller"
             - name: KAFKA_LISTENERS
-              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094"
             - name: KAFKA_ADVERTISED_LISTENERS
-              value: "PLAINTEXT://kafka:9092"
+              value: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094"
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
-              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
             - name: KAFKA_INTER_BROKER_LISTENER_NAME
               value: "PLAINTEXT"
             - name: KAFKA_CONTROLLER_LISTENER_NAMES
@@ -133,6 +143,9 @@ spec:
     - name: broker
       port: 9092
       targetPort: 9092
+    - name: external
+      port: 9094
+      targetPort: 9094
     # No port 9093 (CONTROLLER) here: KAFKA_CONTROLLER_QUORUM_VOTERS
     # uses "localhost", not this Service, so nothing needs to reach
     # 9093 through it — see the env var's comment above for why.

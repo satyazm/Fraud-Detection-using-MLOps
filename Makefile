@@ -21,12 +21,12 @@ install-dev:
 	pre-commit install
 
 lint:
-	ruff check src tests feast_repo
-	black --check src tests feast_repo
+	ruff check src tests feast_repo airflow/dags dashboard
+	black --check src tests feast_repo airflow/dags dashboard
 
 format:
-	ruff check --fix src tests feast_repo
-	black src tests feast_repo
+	ruff check --fix src tests feast_repo airflow/dags dashboard
+	black src tests feast_repo airflow/dags dashboard
 
 typecheck:
 	mypy src
