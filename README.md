@@ -16,6 +16,10 @@ deployment/operations (a real Kubernetes deployment, three Airflow
 DAGs, and an expanded CI). Stress testing, also named in the Milestone
 8 brief, is not done — see ADR-0009.
 
+## Architecture overview
+
+![Fraud detection platform architecture](docs/images/architecture-overview.png)
+
 ## Project layout
 
 ```
