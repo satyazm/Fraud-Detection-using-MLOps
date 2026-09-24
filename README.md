@@ -1,20 +1,12 @@
 # Real-Time Fraud Detection MLOps Platform
 
-A production-grade MLOps platform for real-time fraud detection, built on
-the [PaySim](https://www.kaggle.com/datasets/ealaxi/paysim1) synthetic
-mobile-money transaction dataset.
-
-This repository is being built in milestones. **Milestones 1-8 are
-done**: project scaffold, a shared feature-engineering pipeline, the
-data pipeline, model training/comparison with MLflow tracking and
-registry, Kafka streaming, a real-time feature platform (Feast +
-Redis + a real PyFlink streaming job), a real-time inference API
-(FastAPI: Feast online features + an MLflow Production model -> fraud
-probability), observability (Prometheus metrics, an auto-provisioned
-Grafana dashboard, and Evidently AI data-drift reports), and
-deployment/operations (a real Kubernetes deployment, three Airflow
-DAGs, and an expanded CI). Stress testing, also named in the Milestone
-8 brief, is not done — see ADR-0009.
+An MLOps platform for real-time fraud detection using the
+[PaySim](https://www.kaggle.com/datasets/ealaxi/paysim1) synthetic
+mobile-money transaction dataset. It trains and tracks models offline,
+computes live features from Kafka with PyFlink and Feast, and serves
+predictions through FastAPI. Prometheus, Grafana, Evidently, Airflow,
+and Kubernetes support monitoring and operations. See the [roadmap](#roadmap)
+for milestone status and remaining work.
 
 ## Contents
 
@@ -48,78 +40,28 @@ DAGs, and an expanded CI). Stress testing, also named in the Milestone
 
 ### Project layout
 
-```
-configs/             YAML configuration: base.yaml + {env}.yaml overlays, logging.yaml
-data/
-  raw/                Original, immutable source data (gitignored contents)
-  processed/          train/validation/test parquet splits, features included (gitignored)
-  sample/             Small samples for tests/local dev (gitignored contents)
-  contracts/          Versioned wire-format contracts (e.g. transaction_schema.json)
-  feast/              Feast's offline FileSource parquet (gitignored, generated)
-  monitoring/         Live prediction log (gitignored, generated) — see monitoring/prediction_log.py
-feast_repo/           Feast feature repo: feature_store.yaml + definitions.py
-src/fraud_detection/  Installable package (see Package layout below)
-tests/                Pytest test suite (mirrors src/fraud_detection layout)
-docs/
-  architecture.md      System architecture, layering, target data flow
-  decisions/            Architecture Decision Records (ADRs)
-  data_report.md         Generated PaySim data quality report
-  model_report.md         Generated model comparison report
-  drift_report.html       Generated Evidently AI drift report (gitignored — several MB, over this repo's 1MB pre-commit cap)
-  images/                  Generated plots referenced by the reports above
-mlruns/               MLflow tracking store (gitignored, local-only)
-.flink-jars/          Flink<->Kafka connector JAR (gitignored, downloaded by `make flink-jar`)
-scripts/              One-off operational/data scripts
-docker/               Dockerfile.api (the inference service), feature_store.docker.yaml,
-                        prometheus.yml, grafana/ (auto-provisioned datasource + dashboard)
-docker-compose.yml    Local dev stack: Kafka, Redis, MLflow, api, Prometheus + redis-exporter
-                        + cadvisor + Grafana
-airflow/              Airflow DAGs
-kubernetes/           Kubernetes manifests / Helm charts
-.github/workflows/    CI pipelines
-requirements/         Pinned dependency sets (base/dev/prod)
-```
+| Path | Purpose |
+|------|---------|
+| `src/fraud_detection/` | Installable Python application |
+| `data/` | Raw data, processed splits, contracts, Feast source, and prediction logs; generated data is gitignored |
+| `feast_repo/` | Feast entity, feature view, and store configuration |
+| `configs/` | Environment overlays and logging configuration |
+| `mlruns/` | Local MLflow tracking store (gitignored) |
+| `dashboard/` | Local Streamlit live demo |
+| `docker/`, `docker-compose.yml` | Images and local infrastructure |
+| `kubernetes/`, `airflow/` | Cluster deployment and scheduled workflows |
+| `tests/`, `.github/workflows/` | Pytest suite and CI |
+| `requirements/`, `Makefile` | Pinned dependencies and task shortcuts |
+| `docs/`, `scripts/` | Architecture decisions, generated reports, and utilities |
 
 #### Package layout
 
-`src/fraud_detection/` is a single installable package, organized by
-clean-architecture layer (see `docs/architecture.md` for the dependency
-rules between layers):
-
-```
-fraud_detection/
-  domain/        Business entities (Transaction, Prediction, FraudDecision) — depends on nothing else
-  common/        Config loading, logging
-  cli.py         `fraud-detection` command-line entry point
-  data/          Ingestion, validation, preprocessing, splitting
-  features/      Feature pipeline (ADR-0003) + Feast integration (ADR-0006):
-                    feature_pipeline.py, transformers.py, registry.py   — the one feature implementation
-                    entity_key.py                                       — deterministic Feast entity id
-                    feast_prep.py                                       — builds the offline source parquet
-                    feast_store.py                                      — FeatureStore protocol, Feast-backed
-                    feast_ops.py                                        — feast apply/materialize
-  models/        Training, comparison, evaluation, MLflow tracking/registry
-  streaming/     Kafka producer/consumer (ADR-0005) + PyFlink job (ADR-0006):
-                    producer.py, consumer.py, serializer.py             — Milestone 4
-                    flink_job.py                                        — Kafka -> transform_one() -> Feast/Redis
-  api/           Real-time inference API (ADR-0007):
-                    app.py                — FastAPI app, startup/lifespan (loads the model once)
-                    dependencies.py        — AppState + Depends() providers
-                    prediction_service.py  — entity lookup -> Feast features -> model.predict_proba()
-                    routers.py             — /health, /ready, /metrics, /predict
-                    schemas.py             — Pydantic request/response models
-  monitoring/    Observability (ADR-0008):
-                    metrics.py             — Prometheus metric definitions + the shared redis live-check
-                    prediction_log.py      — appends real /predict requests (drift's "live" data)
-                    drift.py               — Evidently AI report: training data vs. prediction_log
-  utils/         Generic helpers
-```
-
-Importing is unambiguous and namespace-safe, e.g.:
-
-```python
-from fraud_detection.common.config import load_config
-```
+`src/fraud_detection/` separates `domain` entities, `data` preparation,
+shared `features`, `models`, Kafka/PyFlink `streaming`, the FastAPI
+`api`, `monitoring`, and `common` configuration/logging. `cli.py` is
+the `fraud-detection` command entry point. See
+[docs/architecture.md](docs/architecture.md) for layer dependencies and
+[docs/decisions/](docs/decisions/) for design rationale.
 
 ## Getting started
 
@@ -144,76 +86,30 @@ source .venv/bin/activate
 make install-dev   # installs dev deps, the package (editable), and git pre-commit hooks
 ```
 
-`install`/`install-dev` handle a real quirk: `apache-flink` (PyFlink)
-needs `setuptools<81` present before it builds (apache-beam's setup.py
-uses `pkg_resources`) and must install with `--no-build-isolation` so
-the build can see it — both Makefile targets already do this, a plain
-`pip install -r requirements/dev.txt` will not work.
-
-Copy `.env.example` to `.env` and fill in values as later milestones need
-them (nothing reads `.env` yet).
+Use the Makefile install targets: PyFlink requires `setuptools<81`
+and `--no-build-isolation`, which they handle.
 
 ### Common tasks
 
-```bash
-make lint        # ruff + black --check (src, tests, feast_repo)
-make format      # ruff --fix + black
-make typecheck   # mypy
-make test        # pytest with coverage
-make precommit   # run all pre-commit hooks against the full repo
+| Area | Commands |
+|------|----------|
+| Code quality | `make lint`, `make format`, `make typecheck`, `make test`, `make precommit` |
+| Data preparation | `make ingest`, `make validate`, `make preprocess` |
+| Models | `make train`, `make evaluate` |
+| Kafka | `make kafka-up`, `make producer`, `make consumer`, `make kafka-down` |
+| Features | `make redis-up`, `make infra-up`, `make flink-jar`, `make feast-apply`, `make materialize`, `make flink-worker`, `make infra-down` |
+| API | `make api`, `make ready`, `make api-build`, `make api-up`, `make api-down` |
+| Monitoring | `make monitoring-up`, `make monitoring-down`, `make drift-report` |
 
-# Data pipeline (Milestone 2):
-make ingest      # load + schema-validate data/raw/PS_20174660362_1_log.csv
-make validate    # generate docs/data_report.md and docs/images/*.png
-make preprocess  # feature-engineer, clean, stratified-split, save to data/processed/
-
-# Model training (Milestone 3):
-make train       # train + compare LR/RF/XGBoost/LightGBM, log to MLflow, register the best
-make evaluate    # evaluate the latest registered model against the test split
-
-# Kafka streaming (Milestone 4):
-make kafka-up    # start Kafka + Kafka UI (localhost:8080)
-make producer    # stream PaySim transactions onto the `transactions` topic
-make consumer    # consume and log transactions from the `transactions` topic
-make kafka-down  # stop them
-
-# Real-time feature platform (Milestone 5):
-make redis-up       # start Redis (Feast's online store)
-make infra-up       # kafka-up + redis-up together
-make flink-jar      # one-time: download the Flink<->Kafka connector JAR
-make feast-apply    # register Feast entity/feature-view definitions
-make materialize    # build the offline source + push it into Redis via Feast
-make flink-worker   # Kafka -> FeaturePipeline.transform_one() -> Feast/Redis, continuously
-make infra-down     # stop kafka, kafka-ui, redis
-
-# Real-time inference API (Milestone 6):
-make api         # run the FastAPI service locally (localhost:8000)
-make ready       # probe a running instance's /ready endpoint
-make api-build   # build the Docker image
-make api-up      # run it via docker compose (needs infra-up first)
-make api-down    # stop it
-
-# Observability (Milestone 7):
-make monitoring-up     # Prometheus + redis-exporter + cadvisor + Grafana
-make monitoring-down   # stop them
-make drift-report      # Evidently AI report: training data vs. real logged /predict requests
-```
-
-Every command also runs directly, with overridable paths:
+The Makefile wraps the CLI, Docker Compose, and code quality tools.
+Run `fraud-detection --help` or
+`fraud-detection <command> --help` to see overridable paths, topics,
+ports, and other options. For example:
 
 ```bash
-fraud-detection ingest --raw-path data/raw/PS_20174660362_1_log.csv
-fraud-detection validate --raw-path data/raw/PS_20174660362_1_log.csv
 fraud-detection preprocess --raw-path data/raw/PS_20174660362_1_log.csv --output-dir data/processed
 fraud-detection train --tracking-uri file:./mlruns --experiment-name paysim-fraud-detection
-fraud-detection evaluate --model-uri models:/fraud-detection-classifier/1
 fraud-detection producer --topic transactions --rate 5 --limit 1000
-fraud-detection consumer --topic transactions --group-id fraud-detection-consumer
-fraud-detection feast-apply --repo-path feast_repo
-fraud-detection materialize --sample-size 5000
-fraud-detection flink-worker --topic transactions --bounded
-fraud-detection api --host 0.0.0.0 --port 8000 --registry-name fraud-detection-classifier
-fraud-detection ready --host localhost --port 8000
 fraud-detection drift-report --reference-sample-size 5000 --output-path docs/drift_report.html
 ```
 
@@ -262,116 +158,66 @@ mlflow ui --backend-store-uri file:./mlruns
 
 ### Kafka streaming
 
-`docker-compose.yml` runs a single-node Kafka broker in KRaft mode
-(no ZooKeeper) plus [Kafka UI](https://github.com/provectus/kafka-ui).
-Bring it up first:
+`docker-compose.yml` runs a single-node KRaft Kafka broker and
+[Kafka UI](https://github.com/provectus/kafka-ui) at
+[localhost:8080](http://localhost:8080). Start the broker and check its
+health before producing messages:
 
 ```bash
 make kafka-up
-# or: docker compose up -d kafka kafka-ui
+docker compose ps kafka
 ```
 
-Wait for it to report healthy, then check
-[localhost:8080](http://localhost:8080) — the Kafka UI should show
-cluster `local`, status `online`, 1 broker.
+In separate terminals, start the consumer and then the producer:
 
 ```bash
-docker compose ps kafka   # should show "healthy" after ~15-30s
-```
-
-Then, in two terminals:
-
-```bash
-# Terminal 1 — consume (starts first so it doesn't miss anything)
 fraud-detection consumer --topic transactions
-
-# Terminal 2 — produce
 fraud-detection producer --topic transactions --rate 5 --limit 200
 ```
 
-You should see `received transaction` log lines in terminal 1 as
-terminal 2 streams. `producer` reads the raw PaySim CSV, drops the
-`isFraud` label (not available in a real-time stream), converts each
-row to the shared `fraud_detection.domain.entities.Transaction`, and
-publishes it as JSON; `consumer` deserializes with the exact same
-function and just logs — no feature engineering or inference yet. See
-ADR-0005 for why there's no separate Kafka-specific schema.
-
-**Two single-node Kafka gotchas already fixed in `docker-compose.yml`**
-(worth knowing if you ever hand-roll a KRaft compose file):
-
-1. `CLUSTER_ID` must be a base64-encoded UUID, not an arbitrary string
-   — KRaft will refuse to start otherwise.
-2. `offsets.topic.replication.factor` defaults to 3, which a single
-   broker can never satisfy; `__consumer_offsets` then never gets
-   created and **every** consumer group fails
-   `FindCoordinator` forever with `COORDINATOR_NOT_AVAILABLE` — with no
-   error surfaced to a naive consumer loop, so it just hangs silently.
-   Fixed by setting the replication factor to 1 for a single-node dev
-   cluster (see the comments in `docker-compose.yml`).
+The producer removes the historical `isFraud` label and sends JSON
+serialized from the shared `Transaction` entity. This consumer only
+logs messages; the PyFlink worker below computes live features. The
+single-broker replication settings and KRaft cluster ID are explained
+in [docker-compose.yml](docker-compose.yml) and [ADR-0005](docs/decisions/0005-reuse-domain-entity-for-kafka-messages.md).
 
 ### Real-time feature platform (Feast + Redis + Flink)
 
-```
-  fraud-detection producer
-          |
-          v
-    Kafka: transactions
-          |
-          v
-  fraud-detection flink-worker            <- real PyFlink (local-execution mode)
-    deserialize_transaction()                same serializer.py Milestone 4 uses
-          |
-          v
-    FeaturePipeline.transform_one()          same feature code training uses (ADR-0003)
-          |
-          v
-    FeastFeatureStore.write_online()         Feast's push API
-          |
-          v
-        Redis                                Feast's online store
-          |
-          v
-    get_online_features()  <-------------    what a serving API (Milestone 6) will call
-```
+The PyFlink worker reads Kafka transactions and calls
+`FeaturePipeline.transform_one()`, which delegates to the batch
+`transform()` method. It pushes the nine engineered features through
+Feast into Redis. For batch materialization, `materialize` computes
+features from a PaySim sample,
+writes `data/feast/transaction_features.parquet`, and runs Feast
+materialization. Both paths use the same feature definitions. See
+[ADR-0006](docs/decisions/0006-feast-redis-flink.md).
 
-There's a second, offline path for bulk/dev-scale materialization
-(`fraud-detection materialize`): PaySim CSV sample ->
-`FeaturePipeline.transform()` -> `feast_prep.build_offline_source()`
-(writes `data/feast/transaction_features.parquet`, Feast's registered
-`FileSource`) -> `feast materialize` -> Redis. Both paths write the
-same features through the same `FeaturePipeline`; only how they reach
-Feast differs (batch file vs. streaming push). See ADR-0006 for the
-full reasoning, including why local-execution PyFlink was used instead
-of a separate Flink cluster.
-
-#### Setup (one-time)
+#### One-time setup
 
 ```bash
 brew install openjdk@17
 export JAVA_HOME="/opt/homebrew/opt/openjdk@17"   # add to your shell profile
 export PATH="$JAVA_HOME/bin:$PATH"
-
-make flink-jar   # downloads the Flink<->Kafka connector JAR (not a pip package)
+make flink-jar   # download the Flink Kafka connector JAR
 ```
 
-#### Running it
+#### Run the feature pipeline
 
 ```bash
-make infra-up       # Kafka + Kafka UI + Redis
-make feast-apply    # register the `transaction` entity + `transaction_features` view
-make materialize    # build data/feast/transaction_features.parquet, push into Redis
+make infra-up       # Kafka and Redis
+make feast-apply    # register Feast definitions
+make materialize    # populate Redis from the offline source
+make flink-worker   # continuously process Kafka transactions
+```
 
-# Terminal 1 — the streaming worker (real PyFlink)
-make flink-worker
+In another terminal, produce transactions:
 
-# Terminal 2 — produce transactions
+```bash
 fraud-detection producer --topic transactions --rate 5 --limit 200
 ```
 
-Terminal 1 prints `OK entity_id=... name_orig=...` for each transaction
-as PyFlink computes its features and pushes them to Redis. Verify a
-lookup directly:
+The worker prints an `entity_id` for each processed transaction.
+Verify an online lookup with:
 
 ```python
 from fraud_detection.features.feast_store import FeastFeatureStore
@@ -382,72 +228,33 @@ store = FeastFeatureStore(DEFAULT_FEAST_REPO_PATH, DEFAULT_OFFLINE_SOURCE_PATH)
 store.read_online("<entity_id from the flink-worker log line>")
 ```
 
-`fraud-detection flink-worker --bounded` (also what the test suite
-uses) stops at whatever Kafka offset was latest when the job started,
-instead of running forever — useful for one-off verification.
-
-#### Testing
-
-`tests/features/test_feast_store.py`, `tests/streaming/test_flink_job.py`,
-and the `feast-apply`/`materialize`/`flink-worker` tests in
-`tests/test_cli.py` talk to real Redis (and, for the Flink ones, real
-Kafka + a JVM + the connector JAR) and skip automatically — not fail —
-if any of those aren't available:
-
-```bash
-make infra-up
-make flink-jar
-make test   # Feast/Flink tests run for real; skip cleanly otherwise
-```
-
-CI does not provision Kafka/Redis/Java, so these skip there — mypy/
-ruff/black still run against every module regardless (see ADR-0006).
+`fraud-detection flink-worker --bounded` stops at the latest Kafka
+offset present when the job starts. Redis/Kafka/Flink integration tests
+run when those services, a JDK, and the connector JAR are available;
+otherwise they skip. Use `make infra-up`, `make flink-jar`, then
+`make test` to run them.
 
 ### Real-time inference API (FastAPI + Feast + MLflow)
 
-```
-      Transaction (HTTP POST /predict)
-              |
-              v
-    entity_key.compute_entity_id()        same derived id Milestone 5 uses
-              |
-              v
-    FeastFeatureStore.read_online()       the 9 engineered features — never recomputed
-              |
-              v
-    raw fields (from the request) + one-hot `type` (preprocess()) + engineered features
-              |
-              v
-    reindex to the exact column order MLflow logged for the Production run
-              |
-              v
-    model.predict() / predict_proba()     the MLflow "Production"-stage model, loaded once
-              |
-              v
-    { prediction, fraud_probability, model_version, latency_ms }
-```
+`POST /predict` derives the transaction's Feast entity ID, reads its
+nine engineered features from Redis, combines them with raw request
+fields, and orders the columns exactly as recorded for the MLflow model.
+The API loads the model in MLflow's **Production** stage once at
+startup. If the transaction's features are absent, it returns 503
+instead of recomputing them. See [ADR-0007](docs/decisions/0007-fastapi-inference-service.md).
 
-If a transaction hasn't already flowed through the Milestone 5
-`producer -> Kafka -> flink-worker -> Feast` pipeline, `/predict`
-returns a `503` (not a silently recomputed answer) — see ADR-0007 for
-why. Business logic lives entirely in `api.prediction_service.PredictionService`,
-never in the routes.
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Process liveness |
+| GET | `/ready` | Model, Feast client, and Redis readiness |
+| POST | `/predict` | Fraud class and probability for a transaction |
+| GET | `/metrics` | Prometheus metrics |
+| GET | `/docs` | Interactive OpenAPI documentation |
 
-#### Endpoints
+#### Promote a model once
 
-| Method | Path       | Purpose                                                        |
-|--------|------------|-----------------------------------------------------------------|
-| GET    | `/health`  | Liveness — process is up. Never checks dependencies.            |
-| GET    | `/ready`   | Readiness — model loaded, Feast client constructed, Redis actually reachable (each checked independently). |
-| POST   | `/predict` | Score a transaction (PaySim/Kafka field names — see `/docs` for the schema). |
-| GET    | `/docs`    | Interactive OpenAPI docs (FastAPI's default).                   |
-
-#### Setup (one-time): promote a model to "Production"
-
-`/predict` only ever serves the MLflow version currently in the
-**Production** stage — `fraud-detection train` registers a model but
-deliberately does not auto-promote it (a human/CI gate should decide
-that; see ADR-0007). Promote the version you want to serve:
+`fraud-detection train` registers its best model but does not promote
+it. Promote the version to serve, then start or restart the API:
 
 ```python
 from mlflow.tracking import MlflowClient
@@ -457,16 +264,19 @@ MlflowClient().transition_model_version_stage(
 )
 ```
 
-#### Running it locally
+#### Run locally
 
 ```bash
-make infra-up       # Kafka + Kafka UI + Redis
+make infra-up
 make feast-apply
-make materialize    # or run flink-worker against a live producer — see above
+make materialize    # or populate Feast through Kafka and flink-worker
+make api            # http://localhost:8000
+```
 
-make api            # localhost:8000
-# in another terminal:
-make ready           # or: curl localhost:8000/ready
+In another terminal:
+
+```bash
+make ready
 curl -X POST localhost:8000/predict -H "Content-Type: application/json" -d '{
   "step": 1, "type": "TRANSFER", "amount": 181.0, "nameOrig": "C1231006815",
   "oldbalanceOrg": 181.0, "newbalanceOrig": 0.0, "nameDest": "C1666544295",
@@ -474,127 +284,59 @@ curl -X POST localhost:8000/predict -H "Content-Type: application/json" -d '{
 }'
 ```
 
-#### Running it via Docker
+#### Run with Docker Compose
 
 ```bash
 make infra-up
-make feast-apply     # writes feast_repo/registry.db, bind-mounted into the container
-# promote a model to Production (see above) before starting the container
-
+make feast-apply
+make materialize
 make api-build
-make api-up          # localhost:8000
+make api-up
 ```
 
-The `api` container mounts the host's `mlruns/` (at the identical
-absolute path — MLflow's local file store bakes that path into each
-run's metadata) and `feast_repo/`, and swaps in
-`docker/feature_store.docker.yaml` (Redis reached as `redis:6379`, the
-compose service name, instead of `localhost:6379`) — see ADR-0007,
-which also documents four real bugs this only surfaced once actually
-built and run (missing C toolchain, the MLflow absolute-path mount, a
-`registered_model_meta` write during model *load*, and a `/ready`
-check that had its own hardcoded Redis address instead of sharing
-Feast's). Verified end to end: `docker ps` shows the container's own
-`HEALTHCHECK` reporting `healthy`, `/ready` returns all three checks
-`true`, and a real `/predict` call against the first PaySim row
-returned `200` with the expected low fraud probability.
-
-#### Testing
-
-```bash
-make test   # tests/api/: unit (no infra), API (TestClient + dependency_overrides,
-             # no infra), integration (real MLflow + Feast + Redis, skips cleanly
-             # without Redis — same convention as tests/features/test_feast_store.py)
-```
+Promote a model before starting the container. The Compose API uses the
+host's local `mlruns/` store and mounts `feast_repo/`; its Feast config
+points to `redis:6379` on the Compose network. See
+[ADR-0007](docs/decisions/0007-fastapi-inference-service.md) for the
+container path and Redis configuration details. `make test` covers
+unit tests plus an API integration test that skips without Redis.
 
 ### Observability (Prometheus + Grafana + Evidently AI)
 
-```
-    Kafka -> flink-worker -> Feast -> api (/predict)
-                                        |
-                    +-------------------+-------------------+
-                    |                                        |
-                    v                                        v
-              /metrics (Prometheus format)          monitoring/prediction_log.py
-                    |                                (real logged requests)
-                    v                                        |
-               Prometheus  ---> Grafana                       v
-                    ^                              fraud-detection drift-report
-                    |                                        |
-           redis-exporter, cadvisor                          v
-        (Redis stats, container CPU/mem)          docs/drift_report.html (Evidently AI)
-```
+`/metrics` exposes request counts, errors, latency, prediction counts,
+fraud-probability distribution, and Redis reachability. Each successful
+`/predict` also appends the input and result to
+`data/monitoring/prediction_log.jsonl`. The prediction log supplies
+live data for the Evidently drift report.
 
-Every real `/predict` request updates the six metrics `api/routers.py`
-records (`prediction_requests_total`, `prediction_latency_seconds`,
-`prediction_errors_total`, `model_predictions_total`,
-`model_fraud_probability`, `redis_connection_status`) and appends its
-raw fields + result to `monitoring/prediction_log.py`'s log — the same
-log `drift-report` later compares against the training distribution.
-
-#### Metrics & dashboard
+#### Metrics and dashboard
 
 ```bash
-make infra-up          # Kafka + Redis
-make api-up            # or `make api` to run it on the host instead
-make monitoring-up     # Prometheus (localhost:9090) + redis-exporter + cadvisor + Grafana (localhost:3000)
+make infra-up
+make api-up            # or make api to run on the host
+make monitoring-up     # Prometheus :9090 and Grafana :3000
 ```
 
-Grafana (`admin` / `admin`, set in `docker-compose.yml`) comes up with
-the "Fraud Detection Platform" dashboard already loaded — no manual
-datasource or dashboard import — via
-`docker/grafana/provisioning/`+`docker/grafana/dashboards/`. Panels:
-API Health (requests/sec, response time p50/p95/p99, error rate),
-Model Usage (fraud predictions/hour, average fraud probability,
-prediction outcome distribution), Infrastructure (container CPU/memory
-via cadvisor, Redis status via both `redis-exporter`'s `redis_up` and
-the API's own `redis_connection_status`). No Kafka broker panel — see
-ADR-0008 for why that's a deliberate scope cut, not an oversight.
+Grafana (`admin` / `admin`, set in `docker-compose.yml`) provisions the
+"Fraud Detection Platform" dashboard automatically. It shows API,
+model-usage, Redis, and container metrics. On Docker Desktop for Mac,
+cAdvisor may leave per-container CPU/memory panels empty; see
+[ADR-0008](docs/decisions/0008-monitoring.md). Kafka broker metrics
+are outside the current dashboard's scope.
 
-**Known limitation, found by actually running this**: on Docker
-Desktop for Mac, `cadvisor` can't resolve individual containers'
-CPU/memory (a documented cAdvisor/Docker-Desktop incompatibility, not
-a config bug — see ADR-0008), so the CPU/Memory panels will be empty
-there. Everything else (`redis-exporter`, the API's own metrics,
-Prometheus scraping, the Grafana dashboard itself) was verified
-working end to end, including on Docker Desktop for Mac. `cadvisor`
-should work as intended on a native Linux Docker host.
-
-Send some traffic and watch it show up (needs a Production model and
-Feast populated — see the "Real-time inference API" section above):
+#### Data drift
 
 ```bash
-for i in $(seq 1 20); do
-  curl -s -X POST localhost:8000/predict -H "Content-Type: application/json" -d '{
-    "step": 1, "type": "TRANSFER", "amount": 181.0, "nameOrig": "C1231006815",
-    "oldbalanceOrg": 181.0, "newbalanceOrig": 0.0, "nameDest": "C1666544295",
-    "oldbalanceDest": 0.0, "newbalanceDest": 0.0
-  }' > /dev/null
-done
-open http://localhost:3000   # or curl localhost:9090 for raw Prometheus
-```
-
-#### Data drift (Evidently AI)
-
-```bash
-make drift-report   # or: fraud-detection drift-report
+make drift-report
 open docs/drift_report.html
 ```
 
-Compares a sample of the raw PaySim training data against
-`monitoring/prediction_log.py`'s real log of what `/predict` has
-actually been asked to score, on `amount`/`type`/`oldbalanceOrg`/`newbalanceOrig`.
-Fails cleanly (exit 1, no report written) if nothing has been logged
-yet — send some `/predict` requests first.
-
-#### Not implemented: model performance monitoring (precision/recall/AP)
-
-This architecture has no ground-truth feedback loop — nothing ever
-tells the system whether a served prediction was actually correct — so
-there's nothing honest to compute precision/recall/false-positive-rate
-from yet. `model_fraud_probability` and the drift report are the real,
-label-free subset of "is the model behaving normally" available today.
-See ADR-0008.
+The report compares real logged requests with a PaySim reference
+sample for `amount`, `type`, `oldbalanceOrg`, and `newbalanceOrig`.
+It requires at least one successful `/predict` request. The platform
+has no ground-truth feedback loop, so it cannot calculate live
+precision, recall, or false-positive rate; probability and data drift
+are the available label-free signals.
 
 ## Deployment and operations
 
@@ -642,8 +384,16 @@ kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/late
 Deploy everything:
 
 ```bash
-kubectl apply -f kubernetes/
+kubectl apply -f kubernetes/namespace.yaml
+kubectl apply -f kubernetes/configmap.yaml -f kubernetes/secret.yaml
+kubectl apply -f kubernetes/redis.yaml -f kubernetes/kafka.yaml -f kubernetes/mlflow.yaml
+kubectl apply -f kubernetes/api.yaml -f kubernetes/flink-worker.yaml
+kubectl apply -f kubernetes/prometheus.yaml -f kubernetes/grafana.yaml
+kubectl apply -f kubernetes/jobs.yaml -f kubernetes/hpa.yaml -f kubernetes/ingress.yaml
 ```
+
+`kind-cluster.yaml` configures `kind` itself and is not a Kubernetes
+resource to apply.
 
 `training-job` needs a model registered *and* promoted to
 "Production" before `api` can serve real predictions (same one-time
@@ -705,34 +455,19 @@ port-forward) and ADR-0009 for two real bugs this surfaced.
 
 ## Roadmap
 
-- **Milestone 1 (done):** Foundation — scaffold, tooling, config,
-  logging, domain layer.
-- **Milestone 2 (done):** Data pipeline & EDA.
-- **Milestone 3 (done):** Feature engineering pipeline, model training
-  and comparison, MLflow tracking and registry.
-- **Milestone 4 (done):** Kafka streaming foundation — producer,
-  consumer, shared domain-entity schema. No inference in the stream
-  yet.
-- **Milestone 5 (done):** Real-time feature platform — Feast, Redis,
-  a real PyFlink streaming job computing features via the same
-  `FeaturePipeline` training uses. No model inference in the stream
-  yet.
-- **Milestone 6 (done):** Real-time inference API — FastAPI, Feast
-  online features (never recomputed) + an MLflow Production-stage
-  model, `/health`/`/ready`/`/predict`, Docker.
-- **Milestone 7 (done):** Observability — Prometheus metrics
-  (`/metrics`), an auto-provisioned Grafana dashboard, `redis-exporter`
-  + `cadvisor` for infrastructure metrics, and Evidently AI data-drift
-  reports comparing training data against a real log of served
-  predictions. No Kafka broker metrics or ground-truth-based model
-  performance metrics (precision/recall/AP) — see ADR-0008.
-- **Milestone 8 (done):** A real Kubernetes deployment (`kubernetes/`,
-  a local `kind` cluster), three Airflow DAGs orchestrating this
-  project's own CLI via `DockerOperator`, and an expanded CI (Docker
-  image builds, `kubeconform` manifest validation, Airflow DAG import
-  checks). Stress testing, also named in the milestone brief, is not
-  done — see ADR-0009 for the full scope and every real bug found
-  running each of these for real.
+| Milestone | Status | Scope |
+|-----------|--------|-------|
+| 1 | Done | Foundation, configuration, logging, and domain layer |
+| 2 | Done | PaySim ingestion, validation, preprocessing, and EDA |
+| 3 | Done | Shared features, model comparison, and MLflow tracking/registry |
+| 4 | Done | Kafka producer/consumer and shared transaction contract |
+| 5 | Done | PyFlink, Feast, and Redis real-time feature pipeline |
+| 6 | Done | FastAPI inference using Feast features and a Production-stage model |
+| 7 | Done | Prometheus, Grafana, and Evidently data-drift reporting |
+| 8 | Done | Kubernetes deployment, Airflow DAGs, and expanded CI |
 
-See `docs/architecture.md` and `docs/decisions/` for the reasoning
-behind these choices.
+Stress testing from the Milestone 8 brief remains undone. Live model
+performance metrics also require a ground-truth feedback loop; Kafka
+broker metrics are not in the current dashboard. See
+[ADR-0008](docs/decisions/0008-monitoring.md) and
+[ADR-0009](docs/decisions/0009-deployment-and-operations.md).
