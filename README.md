@@ -16,11 +16,37 @@ deployment/operations (a real Kubernetes deployment, three Airflow
 DAGs, and an expanded CI). Stress testing, also named in the Milestone
 8 brief, is not done — see ADR-0009.
 
-## Architecture overview
+## Contents
+
+- [Project overview](#project-overview)
+  - [Architecture overview](#architecture-overview)
+  - [Project and package layout](#project-layout)
+- [Getting started](#getting-started)
+  - [Requirements](#requirements)
+  - [Setup](#setup)
+  - [Common tasks](#common-tasks)
+  - [Configuration](#configuration)
+  - [Logging](#logging)
+- [Core workflows](#core-workflows)
+  - [Model training and MLflow](#model-training--mlflow)
+  - [Kafka streaming](#kafka-streaming)
+  - [Real-time feature platform](#real-time-feature-platform-feast--redis--flink)
+  - [Real-time inference API](#real-time-inference-api-fastapi--feast--mlflow)
+  - [Observability](#observability-prometheus--grafana--evidently-ai)
+- [Deployment and operations](#deployment-and-operations)
+  - [Other local infrastructure](#other-local-infrastructure)
+  - [Kubernetes deployment](#kubernetes-deployment)
+  - [Airflow orchestration](#airflow-orchestration)
+  - [Live demo dashboard](#live-demo-dashboard)
+- [Roadmap](#roadmap)
+
+## Project overview
+
+### Architecture overview
 
 ![Fraud detection platform architecture](docs/images/architecture-overview.png)
 
-## Project layout
+### Project layout
 
 ```
 configs/             YAML configuration: base.yaml + {env}.yaml overlays, logging.yaml
@@ -54,7 +80,7 @@ kubernetes/           Kubernetes manifests / Helm charts
 requirements/         Pinned dependency sets (base/dev/prod)
 ```
 
-### Package layout
+#### Package layout
 
 `src/fraud_detection/` is a single installable package, organized by
 clean-architecture layer (see `docs/architecture.md` for the dependency
@@ -95,7 +121,9 @@ Importing is unambiguous and namespace-safe, e.g.:
 from fraud_detection.common.config import load_config
 ```
 
-## Requirements
+## Getting started
+
+### Requirements
 
 - Python 3.11
 - The PaySim CSV (`PS_20174660362_1_log.csv` from
@@ -107,7 +135,7 @@ from fraud_detection.common.config import load_config
 - A JDK (11, 17, or 21) for PyFlink, e.g. `brew install openjdk@17`,
   with `JAVA_HOME` set — see "Real-time feature platform" below.
 
-## Setup
+### Setup
 
 ```bash
 python3.11 -m venv .venv
@@ -125,7 +153,7 @@ the build can see it — both Makefile targets already do this, a plain
 Copy `.env.example` to `.env` and fill in values as later milestones need
 them (nothing reads `.env` yet).
 
-## Common tasks
+### Common tasks
 
 ```bash
 make lint        # ruff + black --check (src, tests, feast_repo)
@@ -189,7 +217,7 @@ fraud-detection ready --host localhost --port 8000
 fraud-detection drift-report --reference-sample-size 5000 --output-path docs/drift_report.html
 ```
 
-## Configuration
+### Configuration
 
 Configuration is split into `configs/base.yaml` (shared defaults) plus an
 environment overlay (`configs/dev.yaml`, `configs/prod.yaml`) that's
@@ -201,7 +229,7 @@ from fraud_detection.common.config import load_config
 config = load_config("dev")  # or load_config() to use APP_ENV, defaulting to "dev"
 ```
 
-## Logging
+### Logging
 
 Structured JSON logging is configured in `configs/logging.yaml` and
 initialized via `fraud_detection.common.logger`:
@@ -212,7 +240,9 @@ from fraud_detection.common.logger import get_logger
 logger = get_logger(__name__)
 ```
 
-## Model training & MLflow
+## Core workflows
+
+### Model training & MLflow
 
 `fraud-detection train` trains Logistic Regression, Random Forest,
 XGBoost, and LightGBM on `data/processed/` (already feature-engineered
@@ -230,7 +260,7 @@ with:
 mlflow ui --backend-store-uri file:./mlruns
 ```
 
-## Kafka streaming
+### Kafka streaming
 
 `docker-compose.yml` runs a single-node Kafka broker in KRaft mode
 (no ZooKeeper) plus [Kafka UI](https://github.com/provectus/kafka-ui).
@@ -280,7 +310,7 @@ ADR-0005 for why there's no separate Kafka-specific schema.
    Fixed by setting the replication factor to 1 for a single-node dev
    cluster (see the comments in `docker-compose.yml`).
 
-## Real-time feature platform (Feast + Redis + Flink)
+### Real-time feature platform (Feast + Redis + Flink)
 
 ```
   fraud-detection producer
@@ -315,7 +345,7 @@ Feast differs (batch file vs. streaming push). See ADR-0006 for the
 full reasoning, including why local-execution PyFlink was used instead
 of a separate Flink cluster.
 
-### Setup (one-time)
+#### Setup (one-time)
 
 ```bash
 brew install openjdk@17
@@ -325,7 +355,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 make flink-jar   # downloads the Flink<->Kafka connector JAR (not a pip package)
 ```
 
-### Running it
+#### Running it
 
 ```bash
 make infra-up       # Kafka + Kafka UI + Redis
@@ -356,7 +386,7 @@ store.read_online("<entity_id from the flink-worker log line>")
 uses) stops at whatever Kafka offset was latest when the job started,
 instead of running forever — useful for one-off verification.
 
-### Testing
+#### Testing
 
 `tests/features/test_feast_store.py`, `tests/streaming/test_flink_job.py`,
 and the `feast-apply`/`materialize`/`flink-worker` tests in
@@ -373,7 +403,7 @@ make test   # Feast/Flink tests run for real; skip cleanly otherwise
 CI does not provision Kafka/Redis/Java, so these skip there — mypy/
 ruff/black still run against every module regardless (see ADR-0006).
 
-## Real-time inference API (FastAPI + Feast + MLflow)
+### Real-time inference API (FastAPI + Feast + MLflow)
 
 ```
       Transaction (HTTP POST /predict)
@@ -403,7 +433,7 @@ returns a `503` (not a silently recomputed answer) — see ADR-0007 for
 why. Business logic lives entirely in `api.prediction_service.PredictionService`,
 never in the routes.
 
-### Endpoints
+#### Endpoints
 
 | Method | Path       | Purpose                                                        |
 |--------|------------|-----------------------------------------------------------------|
@@ -412,7 +442,7 @@ never in the routes.
 | POST   | `/predict` | Score a transaction (PaySim/Kafka field names — see `/docs` for the schema). |
 | GET    | `/docs`    | Interactive OpenAPI docs (FastAPI's default).                   |
 
-### Setup (one-time): promote a model to "Production"
+#### Setup (one-time): promote a model to "Production"
 
 `/predict` only ever serves the MLflow version currently in the
 **Production** stage — `fraud-detection train` registers a model but
@@ -427,7 +457,7 @@ MlflowClient().transition_model_version_stage(
 )
 ```
 
-### Running it locally
+#### Running it locally
 
 ```bash
 make infra-up       # Kafka + Kafka UI + Redis
@@ -444,7 +474,7 @@ curl -X POST localhost:8000/predict -H "Content-Type: application/json" -d '{
 }'
 ```
 
-### Running it via Docker
+#### Running it via Docker
 
 ```bash
 make infra-up
@@ -469,7 +499,7 @@ Feast's). Verified end to end: `docker ps` shows the container's own
 `true`, and a real `/predict` call against the first PaySim row
 returned `200` with the expected low fraud probability.
 
-### Testing
+#### Testing
 
 ```bash
 make test   # tests/api/: unit (no infra), API (TestClient + dependency_overrides,
@@ -477,7 +507,7 @@ make test   # tests/api/: unit (no infra), API (TestClient + dependency_override
              # without Redis — same convention as tests/features/test_feast_store.py)
 ```
 
-## Observability (Prometheus + Grafana + Evidently AI)
+### Observability (Prometheus + Grafana + Evidently AI)
 
 ```
     Kafka -> flink-worker -> Feast -> api (/predict)
@@ -502,7 +532,7 @@ records (`prediction_requests_total`, `prediction_latency_seconds`,
 raw fields + result to `monitoring/prediction_log.py`'s log — the same
 log `drift-report` later compares against the training distribution.
 
-### Metrics & dashboard
+#### Metrics & dashboard
 
 ```bash
 make infra-up          # Kafka + Redis
@@ -544,7 +574,7 @@ done
 open http://localhost:3000   # or curl localhost:9090 for raw Prometheus
 ```
 
-### Data drift (Evidently AI)
+#### Data drift (Evidently AI)
 
 ```bash
 make drift-report   # or: fraud-detection drift-report
@@ -557,7 +587,7 @@ actually been asked to score, on `amount`/`type`/`oldbalanceOrg`/`newbalanceOrig
 Fails cleanly (exit 1, no report written) if nothing has been logged
 yet — send some `/predict` requests first.
 
-### Not implemented: model performance monitoring (precision/recall/AP)
+#### Not implemented: model performance monitoring (precision/recall/AP)
 
 This architecture has no ground-truth feedback loop — nothing ever
 tells the system whether a served prediction was actually correct — so
@@ -566,7 +596,9 @@ from yet. `model_fraud_probability` and the drift report are the real,
 label-free subset of "is the model behaving normally" available today.
 See ADR-0008.
 
-## Other local infrastructure
+## Deployment and operations
+
+### Other local infrastructure
 
 `docker-compose.yml` also defines a standalone MLflow tracking server
 unused by this compose stack specifically — the `api` service here
@@ -574,7 +606,7 @@ talks to the local `mlruns/` file store instead (see ADR-0007). It's
 the Kubernetes deployment (below) that actually serves it. Bring the
 Compose one up if needed: `docker compose up mlflow`.
 
-## Kubernetes deployment
+### Kubernetes deployment
 
 `kubernetes/` deploys the same system to a real local `kind` cluster —
 `redis`, `kafka`, a real MLflow tracking server (`api`/`training-job`
@@ -629,7 +661,7 @@ MlflowClient(tracking_uri="http://localhost:5000").transition_model_version_stag
 Then reach the API via the ingress controller's mapped port (see
 `kind-cluster.yaml`'s `extraPortMappings`): `curl http://localhost:8090/health`.
 
-## Airflow orchestration
+### Airflow orchestration
 
 Three DAGs (`airflow/dags/`) orchestrate this project's own CLI on a
 schedule, each running `mloops-worker:latest` as a short-lived sibling
@@ -661,7 +693,7 @@ their containers at 1.5GB — see ADR-0009 for exactly why (the full
 file threatens the whole Docker Desktop VM this stack and `kind` share,
 not just the one task).
 
-## Live demo dashboard
+### Live demo dashboard
 
 `dashboard/app.py` (`streamlit run dashboard/app.py`) streams real
 PaySim transactions through the actual Kubernetes pipeline (Kafka ->
