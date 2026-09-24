@@ -54,12 +54,14 @@ VALID_TRANSACTION_TYPES = {"CASH_IN", "CASH_OUT", "DEBIT", "PAYMENT", "TRANSFER"
 DEFAULT_RAW_PATH = PROJECT_ROOT / "data" / "raw" / "PS_20174660362_1_log.csv"
 
 
-def load_paysim_csv(path: Path | str | None = None) -> pd.DataFrame:
+def load_paysim_csv(path: Path | str | None = None, *, nrows: int | None = None) -> pd.DataFrame:
     """Load and schema-validate the raw PaySim CSV.
 
     Args:
         path: Path to the CSV file. Defaults to the canonical PaySim
             filename under `data/raw/`.
+        nrows: Read only the first N rows when a small materialization
+            sample is needed. The returned rows receive the same schema checks.
 
     Returns:
         The raw dataframe, unmodified, once it has passed schema checks.
@@ -75,7 +77,7 @@ def load_paysim_csv(path: Path | str | None = None) -> pd.DataFrame:
         raise DataIngestionError(f"PaySim CSV not found at {csv_path}")
 
     try:
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, nrows=nrows)
     except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeDecodeError) as exc:
         raise DataIngestionError(f"Failed to parse CSV at {csv_path}: {exc}") from exc
 

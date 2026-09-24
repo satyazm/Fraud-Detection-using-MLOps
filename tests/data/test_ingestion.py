@@ -46,3 +46,13 @@ def test_load_paysim_csv_succeeds_for_valid_file(tmp_path, sample_transactions_d
 
     assert len(df) == len(sample_transactions_df)
     assert set(df.columns) == set(sample_transactions_df.columns)
+
+
+def test_load_paysim_csv_validates_a_limited_sample(tmp_path, sample_transactions_df):
+    csv_path = tmp_path / "valid.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+
+    df = load_paysim_csv(csv_path, nrows=2)
+
+    assert len(df) == 2
+    assert set(df.columns) == set(sample_transactions_df.columns)

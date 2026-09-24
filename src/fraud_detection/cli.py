@@ -1,17 +1,4 @@
-"""Command-line entry point for the fraud detection platform.
-
-`ingest`/`validate`/`preprocess` run the data pipeline (Milestone 2).
-`train`/`evaluate` run model training/evaluation with MLflow tracking
-(Milestone 3). `producer`/`consumer` stream/log PaySim transactions via
-Kafka (Milestone 4; no inference yet). `feast-apply`/`materialize`/
-`flink-worker` run the real-time feature platform (Milestone 5):
-register Feast definitions, push offline features into Redis, and run
-the PyFlink job that computes features from the live Kafka stream.
-`api`/`ready` run and probe the real-time inference service (Milestone
-6): Feast online features -> MLflow Production model -> fraud
-probability. `drift-report` (Milestone 7) compares that training data
-against real logged `/predict` requests via Evidently AI.
-"""
+"""Parse CLI commands and connect them to the platform's workflows."""
 
 from __future__ import annotations
 
@@ -25,6 +12,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import mlflow.sklearn
+import pandas as pd
 from mlflow.exceptions import MlflowException
 
 from fraud_detection.common.logger import get_logger
@@ -52,7 +40,7 @@ from fraud_detection.features.feast_prep import (
 )
 from fraud_detection.features.feature_pipeline import DEFAULT_FEATURE_PIPELINE
 from fraud_detection.features.registry import feature_version as compute_feature_version
-from fraud_detection.models.dataset import DEFAULT_PROCESSED_DIR, load_dataset
+from fraud_detection.models.dataset import DEFAULT_PROCESSED_DIR, Dataset, load_dataset
 from fraud_detection.models.evaluation import evaluate_predictions
 from fraud_detection.models.exceptions import ModelError
 from fraud_detection.models.model_registry import (
@@ -107,11 +95,45 @@ DEFAULT_API_HOST = "0.0.0.0"
 DEFAULT_API_PORT = 8000
 
 
-def _cmd_ingest(args: argparse.Namespace) -> int:
+def _positive_int(value: str) -> int:
     try:
-        df = load_paysim_csv(args.raw_path)
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer")
+    return number
+
+
+def _load_raw_data(path: Path, *, nrows: int | None = None) -> pd.DataFrame | None:
+    try:
+        return load_paysim_csv(path, nrows=nrows)
     except DataError as exc:
         logger.error("ingestion failed", extra={"error": str(exc)})
+        return None
+
+
+def _load_model_data(path: Path) -> Dataset | None:
+    try:
+        return load_dataset(path)
+    except ModelError as exc:
+        logger.error("failed to load dataset", extra={"error": str(exc)})
+        return None
+
+
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    df = _load_raw_data(args.raw_path)
+    if df is None:
         return 1
 
     logger.info("ingestion succeeded", extra={"rows": len(df), "columns": len(df.columns)})
@@ -119,10 +141,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    try:
-        df = load_paysim_csv(args.raw_path)
-    except DataError as exc:
-        logger.error("ingestion failed", extra={"error": str(exc)})
+    df = _load_raw_data(args.raw_path)
+    if df is None:
         return 1
 
     report = run_data_quality_checks(df)
@@ -141,10 +161,8 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 
 def _cmd_preprocess(args: argparse.Namespace) -> int:
-    try:
-        df = load_paysim_csv(args.raw_path)
-    except DataError as exc:
-        logger.error("ingestion failed", extra={"error": str(exc)})
+    df = _load_raw_data(args.raw_path)
+    if df is None:
         return 1
 
     report = run_data_quality_checks(df)
@@ -154,9 +172,7 @@ def _cmd_preprocess(args: argparse.Namespace) -> int:
         logger.error("dataset failed trainability check", extra={"error": str(exc)})
         return 1
 
-    # Feature engineering runs before preprocessing: some features (e.g.
-    # is_dest_merchant) read nameDest, which preprocess() drops. See
-    # docs/decisions/0003-shared-feature-pipeline.md.
+    # Engineer features before preprocessing drops account identifiers.
     featurized_df = DEFAULT_FEATURE_PIPELINE.transform(df)
     processed_df = preprocess(featurized_df)
     split = stratified_split(processed_df)
@@ -175,10 +191,8 @@ def _cmd_preprocess(args: argparse.Namespace) -> int:
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
-    try:
-        dataset = load_dataset(args.processed_dir)
-    except ModelError as exc:
-        logger.error("failed to load dataset", extra={"error": str(exc)})
+    dataset = _load_model_data(args.processed_dir)
+    if dataset is None:
         return 1
 
     results = train_and_compare(
@@ -217,10 +231,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
-    try:
-        dataset = load_dataset(args.processed_dir)
-    except ModelError as exc:
-        logger.error("failed to load dataset", extra={"error": str(exc)})
+    dataset = _load_model_data(args.processed_dir)
+    if dataset is None:
         return 1
 
     mlflow.set_tracking_uri(args.tracking_uri)
@@ -286,18 +298,12 @@ def _cmd_feast_apply(args: argparse.Namespace) -> int:
 
 
 def _cmd_materialize(args: argparse.Namespace) -> int:
-    try:
-        df = load_paysim_csv(args.raw_path)
-    except DataError as exc:
-        logger.error("ingestion failed", extra={"error": str(exc)})
+    sample = _load_raw_data(args.raw_path, nrows=args.sample_size)
+    if sample is None:
         return 1
 
-    sample = df.head(args.sample_size)
     featurized = DEFAULT_FEATURE_PIPELINE.transform(sample)
-    # Always DEFAULT_OFFLINE_SOURCE_PATH, matching the fixed FileSource
-    # path feast_repo/definitions.py registers — `feast materialize`
-    # always reads from there, so this can't be independently overridden
-    # via a CLI flag without the two silently going out of sync.
+    # Feast's FileSource is registered at this exact path.
     offline_path = build_offline_source(featurized, output_path=DEFAULT_OFFLINE_SOURCE_PATH)
 
     try:
@@ -333,10 +339,6 @@ def _cmd_flink_worker(args: argparse.Namespace) -> int:
             bootstrap_servers=args.bootstrap_servers,
             group_id=args.group_id,
             repo_path=args.repo_path,
-            # Not CLI-overridable: unused by the online push path
-            # (write_online never reads it), and if it *were* used it
-            # would face the same fixed-FileSource issue materialize
-            # has — see the comment in _cmd_materialize.
             offline_source_path=DEFAULT_OFFLINE_SOURCE_PATH,
             kafka_connector_jar=args.kafka_connector_jar,
             bounded=args.bounded,
@@ -358,11 +360,7 @@ def _cmd_api(args: argparse.Namespace) -> int:
         tracking_uri=args.tracking_uri,
         prediction_log_path=args.prediction_log_path,
     )
-    # log_config=None: skip uvicorn's own logging setup so "uvicorn"/
-    # "uvicorn.access" loggers fall back to propagating into the root
-    # logger this process already configured (configs/logging.yaml),
-    # instead of uvicorn installing a second, differently formatted
-    # (non-JSON) console handler.
+    # Keep Uvicorn logs in the process-wide JSON logging format.
     uvicorn.run(app, host=args.host, port=args.port, log_config=None)
     return 0
 
@@ -372,10 +370,12 @@ def _cmd_ready(args: argparse.Namespace) -> int:
     try:
         with urllib.request.urlopen(url, timeout=args.timeout) as response:
             body = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError) as exc:
-        logger.error(
-            "readiness check failed: could not reach the API", extra={"url": url, "error": str(exc)}
-        )
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.error("readiness check failed", extra={"url": url, "error": str(exc)})
+        return 1
+
+    if not isinstance(body, dict):
+        logger.error("readiness check failed", extra={"url": url, "error": "invalid response"})
         return 1
 
     logger.info("readiness check", extra={"url": url, **body})
@@ -477,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rate", type=float, default=5.0, help="Messages per second (<=0 for no delay)"
     )
     producer_parser.add_argument(
-        "--limit", type=int, default=1000, help="Max rows to stream; 0 means unlimited"
+        "--limit", type=_nonnegative_int, default=1000, help="Max rows to stream; 0 means unlimited"
     )
     producer_parser.set_defaults(func=_cmd_producer)
 
@@ -489,7 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
     consumer_parser.add_argument("--group-id", type=str, default=DEFAULT_GROUP_ID)
     consumer_parser.add_argument(
         "--max-messages",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Stop after N messages; omit to run until interrupted",
     )
@@ -509,7 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     materialize_parser.add_argument("--repo-path", type=Path, default=DEFAULT_FEAST_REPO_PATH)
     materialize_parser.add_argument(
         "--sample-size",
-        type=int,
+        type=_positive_int,
         default=2000,
         help="Rows to feature-engineer and materialize (file offline store is dev-scale)",
     )
@@ -560,7 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     drift_report_parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
     drift_report_parser.add_argument(
-        "--reference-sample-size", type=int, default=DEFAULT_REFERENCE_SAMPLE_SIZE
+        "--reference-sample-size", type=_positive_int, default=DEFAULT_REFERENCE_SAMPLE_SIZE
     )
     drift_report_parser.add_argument("--log-path", type=Path, default=DEFAULT_LOG_PATH)
     drift_report_parser.add_argument("--output-path", type=Path, default=DEFAULT_DRIFT_REPORT_PATH)

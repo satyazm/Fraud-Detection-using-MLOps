@@ -1,9 +1,11 @@
-"""Tests for the CLI: placeholder subcommands and the data/model/streaming pipeline."""
+"""Tests for CLI dispatch and the platform's command workflows."""
 
 import shutil
 import socket
 import uuid
+from io import BytesIO
 
+import pandas as pd
 import pytest
 
 from fraud_detection.cli import _cmd_api, build_parser, main
@@ -53,6 +55,14 @@ requires_flink_stack = pytest.mark.skipif(
 def test_missing_command_is_a_usage_error():
     with pytest.raises(SystemExit):
         main([])
+
+
+@pytest.mark.parametrize("sample_size", ["0", "-1", "not-a-number"])
+def test_materialize_rejects_invalid_sample_sizes(sample_size):
+    with pytest.raises(SystemExit) as error:
+        main(["materialize", "--sample-size", sample_size])
+
+    assert error.value.code == 2
 
 
 def test_ingest_command_succeeds_for_valid_csv(tmp_path, sample_transactions_df):
@@ -263,6 +273,27 @@ def test_materialize_command_builds_offline_source_and_registers(sample_transact
     assert DEFAULT_OFFLINE_SOURCE_PATH.exists()
 
 
+def test_materialize_reads_only_requested_rows(tmp_path, sample_transactions_df, monkeypatch):
+    import fraud_detection.cli as cli
+
+    csv_path = tmp_path / "sample.csv"
+    sample_transactions_df.to_csv(csv_path, index=False)
+    offline_path = tmp_path / "offline.parquet"
+    original_load = cli.load_paysim_csv
+
+    def load_limited_sample(path, *, nrows=None):
+        assert nrows == 2
+        return original_load(path, nrows=nrows)
+
+    monkeypatch.setattr(cli, "load_paysim_csv", load_limited_sample)
+    monkeypatch.setattr(cli, "DEFAULT_OFFLINE_SOURCE_PATH", offline_path)
+    monkeypatch.setattr(cli, "apply_feast_definitions", lambda _repo_path: None)
+    monkeypatch.setattr(cli, "materialize_feast_features", lambda _start, _end, _repo: None)
+
+    assert main(["materialize", "--raw-path", str(csv_path), "--sample-size", "2"]) == 0
+    assert len(pd.read_parquet(offline_path)) == 2
+
+
 @requires_flink_stack
 def test_flink_worker_command_end_to_end(sample_transactions_df, tmp_path):
     from fraud_detection.features.feast_ops import DEFAULT_FEAST_REPO_PATH, apply_feast_definitions
@@ -330,6 +361,15 @@ def test_ready_command_returns_nonzero_when_unreachable():
     exit_code = main(["ready", "--host", "127.0.0.1", "--port", "1", "--timeout", "1"])
 
     assert exit_code == 1
+
+
+def test_ready_command_returns_nonzero_for_invalid_json(monkeypatch):
+    monkeypatch.setattr(
+        "fraud_detection.cli.urllib.request.urlopen",
+        lambda *_args, **_kwargs: BytesIO(b"not-json"),
+    )
+
+    assert main(["ready"]) == 1
 
 
 def test_drift_report_command_fails_cleanly_when_nothing_logged(tmp_path):
