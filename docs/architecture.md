@@ -24,7 +24,7 @@ layer's interface:
 
 | Package     | Responsibility                                            |
 |-------------|------------------------------------------------------------|
-| `domain`    | Business entities (`Transaction`, `Prediction`, `FraudDecision`) and domain exceptions — depends on nothing else in this package |
+| `domain`    | Business entities (`Transaction`) and domain exceptions — depends on nothing else in this package |
 | `common`    | Config loading, logging — no dependency on any other layer |
 | `data`      | Ingestion, validation, preprocessing, splitting for the PaySim dataset |
 | `features`  | One feature pipeline shared by offline training, online inference, and streaming (ADR-0003); Feast + Redis integration (ADR-0006) |
@@ -32,7 +32,6 @@ layer's interface:
 | `streaming` | Kafka producer/consumer sharing `domain.entities.Transaction` as the wire schema (ADR-0005); a PyFlink job computing features from the live stream via the same `FeaturePipeline` (ADR-0006) |
 | `api`       | FastAPI inference service: Feast online features (never recomputed) + an MLflow Production model -> fraud probability (ADR-0007) |
 | `monitoring`| Prometheus metrics, the live-prediction log, and Evidently AI data-drift reports (ADR-0008) |
-| `utils`     | Generic, dependency-free helpers                            |
 
 Dependency direction runs one way, inward toward `domain`:
 `api`/`streaming`/`monitoring` depend on `models` and `features`,

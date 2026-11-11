@@ -11,19 +11,9 @@ feature pipeline (see docs/decisions/0003-shared-feature-pipeline.md —
 that ADR deliberately scopes out fitted transforms; this is where one
 lives instead, private to a single model).
 
-LightGBM needs one extra hyperparameter XGBoost doesn't:
-`reg_lambda=1.0`. Root cause, confirmed by controlled experiments (see
-docs/decisions/0004-lightgbm-regularization.md): XGBoost defaults to
-L2 regularization (`reg_lambda=1`); LightGBM defaults to *none*
-(`reg_lambda=0`). At this dataset's ~774x class weight, LightGBM's
-leaf-wise boosting has nothing to stop it compounding that weight
-across rounds — validation PR-AUC peaked after a single boosting round
-(confirmed with early stopping) and degraded monotonically from there
-to PR-AUC 0.01 at round 200, while XGBoost stayed at PR-AUC ~0.998
-across the same weight and round counts (10 to 500, tested). Matching
-XGBoost's default `reg_lambda=1` on LightGBM — nothing else changed —
-recovers PR-AUC to ~0.995. So: not a resampling/weighting problem, a
-missing-regularization-default problem.
+LightGBM gets `reg_lambda=1.0` (XGBoost's default) because without any L2
+regularization it degrades badly at this dataset's ~774x class weight —
+see docs/decisions/0004-lightgbm-regularization.md.
 """
 
 from __future__ import annotations

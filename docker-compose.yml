@@ -2,10 +2,9 @@
 #
 # kafka + kafka-ui (Milestone 4), redis (Milestone 5, as Feast's online
 # store), api (Milestone 6), and prometheus + redis-exporter + cadvisor
-# + grafana (Milestone 7, observability) are live. The standalone
-# mlflow tracking server remains scaffolding — the api service reads
-# the local mlruns/ file store directly instead (ADR-0007). Bring
-# individual services up as needed, e.g.:
+# + grafana (Milestone 7, observability) are live. (MLflow here is
+# the local mlruns/ file store; the Kubernetes deployment runs a real
+# tracking server.) Bring individual services up as needed, e.g.:
 # `docker compose up kafka kafka-ui redis`, or `make infra-up`.
 
 services:
@@ -77,20 +76,6 @@ services:
       retries: 10
       start_period: 10s
 
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.16.2
-    container_name: fraud-mlflow
-    command: >
-      mlflow server
-      --backend-store-uri sqlite:///mlflow/mlflow.db
-      --default-artifact-root /mlflow/artifacts
-      --host 0.0.0.0
-      --port 5000
-    ports:
-      - "5000:5000"
-    volumes:
-      - mlflow-data:/mlflow
-
   # Scrapes the api service's /metrics, redis-exporter, and cadvisor —
   # see docker/prometheus.yml. Milestone 7.
   prometheus:
@@ -147,9 +132,7 @@ services:
 
   # Real-time inference API (Milestone 6). Points at the same local
   # mlruns/ file store and feast_repo/ that host-side `train`/
-  # `feast-apply`/`materialize` already use, not the separate `mlflow`
-  # HTTP server above — that server remains unused scaffolding until a
-  # future milestone points training at it too. Verified end to end
+  # `feast-apply`/`materialize` already use. Verified end to end
   # (real build, real container, real /predict call against a real
   # model) — see docs/decisions/0007-fastapi-inference-service.md for
   # what that took (four real bugs, none visible from static review).
@@ -207,5 +190,4 @@ services:
 volumes:
   kafka-data:
   redis-data:
-  mlflow-data:
   grafana-data:

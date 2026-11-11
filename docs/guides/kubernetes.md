@@ -1,12 +1,8 @@
 # Kubernetes deployment & local infrastructure
 
-## Other local infrastructure
-
-`docker-compose.yml` also defines a standalone MLflow tracking server
-unused by this compose stack specifically — the `api` service here
-talks to the local `mlruns/` file store instead (see ADR-0007). It's
-the Kubernetes deployment (below) that actually serves it. Bring the
-Compose one up if needed: `docker compose up mlflow`.
+Docker Compose uses the local `mlruns/` file store for MLflow; the
+Kubernetes deployment below runs a real MLflow tracking server instead
+(pods can't share a host filesystem — see ADR-0009).
 
 ## Kubernetes deployment
 

@@ -1,6 +1,6 @@
 # docker/
 
-The local stack (`kafka`, `kafka-ui`, `redis`, `mlflow`, `prometheus`, `redis-exporter`, `cadvisor`, `grafana`, `api`) is defined in [`docker-compose.yml`](../docker-compose.yml) at the repo root.
+The local stack (`kafka`, `kafka-ui`, `redis`, `prometheus`, `redis-exporter`, `cadvisor`, `grafana`, `api`) is defined in [`docker-compose.yml`](../docker-compose.yml) at the repo root.
 
 | File | Purpose |
 |---|---|

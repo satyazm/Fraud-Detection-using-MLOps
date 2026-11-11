@@ -82,11 +82,3 @@ def evaluate_predictions(
         false_negatives=int(fn),
         true_positives=int(tp),
     )
-
-
-def results_to_frame(results: dict[str, EvaluationResult]) -> pd.DataFrame:
-    """Convenience: a comparison table, one row per model name -> result."""
-    rows: dict[str, dict[str, Any]] = {
-        name: result.as_metrics_dict() for name, result in results.items()
-    }
-    return pd.DataFrame.from_dict(rows, orient="index")

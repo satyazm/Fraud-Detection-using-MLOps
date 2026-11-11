@@ -47,12 +47,9 @@ DEFAULT_KAFKA_CONNECTOR_JAR = (
 class _ComputeAndPushFeatures(MapFunction):  # type: ignore[misc]  # MapFunction is Any (no pyflink stubs)
     """Per-record: deserialize, compute features, push to Feast/Redis.
 
-    A stateful `MapFunction` (not a plain lambda) so the Feast client
-    and FeaturePipeline are constructed once per worker in `open()`,
-    not once per record — reconnecting to Redis for every message
-    would be both slow and wasteful. PyFlink runs this in a separate
-    Python worker process (not the driver), so all `fraud_detection`
-    imports happen inside these methods, not at module scope.
+    The Feast client and pipeline are built once per worker in `open()`,
+    not per record. `fraud_detection` imports happen inside the methods
+    because PyFlink runs this in a separate Python worker process.
     """
 
     def __init__(self, repo_path: str, offline_source_path: str) -> None:
@@ -86,20 +83,9 @@ class _ComputeAndPushFeatures(MapFunction):  # type: ignore[misc]  # MapFunction
             features = self._pipeline.transform_one(transaction)  # type: ignore[attr-defined]
             self._store.write_online(entity_id, features)  # type: ignore[attr-defined]
         except Exception as exc:
-            # A real bug, found running this in Kubernetes: this had no
-            # handling at all — a single transient failure (a Redis
-            # write blip, anything) propagated straight through PyFlink
-            # and killed the *entire* streaming job, not just this one
-            # record. Worse than it sounds: `run_flink_worker` enables
-            # no checkpointing, and the Kafka source starts from
-            # `earliest()`, so every restart replayed the whole topic
-            # from scratch and could hit the exact same failure again —
-            # a genuine crash-loop trigger, not just wasted reprocessing.
-            # Broad `except Exception` is deliberate at this specific
-            # per-record boundary (mirroring the InvalidTransactionError
-            # handling above): a long-running stream processor should
-            # never let one bad/unlucky record take the whole job down,
-            # and the failure is still logged, not silently dropped.
+            # Skip just this record instead of killing the whole job. With no
+            # checkpointing and `earliest()` offsets, a crash would replay the
+            # entire topic on restart (see ADR-0009).
             logger.error(
                 "failed to compute/push features for record",
                 extra={"entity_id": entity_id, "error": str(exc)},

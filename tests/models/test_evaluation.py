@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from fraud_detection.models.evaluation import evaluate_predictions, results_to_frame
+from fraud_detection.models.evaluation import evaluate_predictions
 
 
 def test_evaluate_predictions_perfect_classifier():
@@ -58,15 +58,3 @@ def test_as_metrics_dict_values_are_all_floats():
 
     assert all(isinstance(v, float) for v in metrics.values())
     assert "average_precision" in metrics
-
-
-def test_results_to_frame_has_one_row_per_model():
-    y_true = np.array([0, 1])
-    y_pred = np.array([0, 1])
-    y_proba = np.array([0.1, 0.9])
-    result = evaluate_predictions(y_true, y_pred, y_proba)
-
-    frame = results_to_frame({"model_a": result, "model_b": result})
-
-    assert list(frame.index) == ["model_a", "model_b"]
-    assert "average_precision" in frame.columns

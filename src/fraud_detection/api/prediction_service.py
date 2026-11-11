@@ -36,14 +36,8 @@ logger = get_logger(__name__)
 class PredictionService:
     """Scores a `Transaction` against the loaded model, once per request.
 
-    `prediction_log_path` has no default: every call site must decide
-    where predictions get logged. A previous version defaulted it to
-    the real `monitoring.prediction_log.DEFAULT_LOG_PATH`, and test
-    runs silently polluted that real "live production data" file
-    (confirmed: a stubbed 0.99-probability test prediction and a
-    synthetic-fixture transaction both ended up in it) — requiring an
-    explicit path makes that a `TypeError` at construction time
-    instead of a data-quality bug discovered later.
+    `prediction_log_path` has no default on purpose: tests once polluted
+    the real prediction log through a default, so callers must choose.
     """
 
     def __init__(

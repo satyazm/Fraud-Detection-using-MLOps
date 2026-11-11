@@ -49,18 +49,11 @@ class FeastFeatureStore:
         self._feature_refs = [f"{feature_view}:{name}" for name in feature_names()]
 
     def online_store_address(self) -> tuple[str, int]:
-        """Host/port Feast is actually configured to reach Redis at.
+        """Host/port Feast is configured to reach Redis at.
 
-        Parsed from the same `feature_store.yaml` Feast itself loaded
-        (`connection_string`, e.g. `"redis:6379"` or
-        `"localhost:6379,db=0"`) — the single source of truth for where
-        Redis is, rather than a second hardcoded host/port a caller
-        could keep separately and let drift out of sync. That drift is
-        exactly what happened before this existed: the API's `/ready`
-        check hardcoded "localhost:6379" for its live Redis probe, which
-        was wrong inside a container where Feast itself was correctly
-        configured for "redis:6379" — `/ready` reported `redis_reachable:
-        false` even though Feast could reach Redis fine.
+        Parsed from Feast's own `feature_store.yaml`, so there is a single
+        source of truth (a separate hardcoded address once made `/ready`
+        wrong inside containers — see ADR-0007).
         """
         connection_string = self._client.config.online_store.connection_string
         host, port = connection_string.split(",")[0].split(":")
