@@ -3,7 +3,7 @@
 # the `kubernetes/` manifest set kubectl deploys; kept alongside it
 # because it's the one piece of cluster setup specific to running this
 # project locally. See docs/decisions/0009-deployment-and-operations.md
-# and the README's Kubernetes section.
+# and docs/guides/kubernetes.md.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:

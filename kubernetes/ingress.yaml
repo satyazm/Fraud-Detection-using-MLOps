@@ -3,7 +3,7 @@
 # docs/decisions/0009-deployment-and-operations.md for the setup
 # step). On a real cloud cluster this would sit behind a real
 # LoadBalancer/DNS name; on `kind` it's reached via the ingress
-# controller's NodePort (see the README's Kubernetes section for the
+# controller's NodePort (see docs/guides/kubernetes.md for the
 # exact local URL).
 apiVersion: networking.k8s.io/v1
 kind: Ingress

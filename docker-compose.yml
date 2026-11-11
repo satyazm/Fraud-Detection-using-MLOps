@@ -157,7 +157,7 @@ services:
   # One-time host-side setup before `docker compose up api`:
   # `make feast-apply` (writes feast_repo/registry.db, bind-mounted in)
   # and a model promoted to the "Production" stage in mlruns/ (see
-  # README's "Real-time inference API" section).
+  # docs/guides/inference-api.md).
   api:
     build:
       context: .

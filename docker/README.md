@@ -1,16 +1,14 @@
 # docker/
 
-The local dev stack (`kafka`, `redis`, `mlflow`, `prometheus`, `grafana`,
-`api`) is defined in `docker-compose.yml` at the repo root.
+The local stack (`kafka`, `kafka-ui`, `redis`, `mlflow`, `prometheus`, `redis-exporter`, `cadvisor`, `grafana`, `api`) is defined in [`docker-compose.yml`](../docker-compose.yml) at the repo root.
 
-- `Dockerfile.api` (Milestone 6) — builds the FastAPI inference
-  service's image; see the `api` service in `docker-compose.yml` and
-  the "Real-time inference API" section of the root README.
-- `feature_store.docker.yaml` — `feast_repo/feature_store.yaml` with
-  the Redis `connection_string` swapped from `localhost:6379` (correct
-  for host-side `flink-worker`/`materialize`/tests) to `redis:6379`
-  (the compose network's service name); bind-mounted over the real
-  file for the `api` service only.
+| File | Purpose |
+|---|---|
+| `Dockerfile.api` | FastAPI inference service image |
+| `Dockerfile.worker` | Generic CLI image (train, evaluate, producer, materialize, drift-report, …) used by Kubernetes Jobs and Airflow `DockerOperator` tasks |
+| `Dockerfile.flink-worker` | PyFlink streaming worker; the only image with a JDK and the Kafka connector JAR |
+| `feature_store.docker.yaml` | `feast_repo/feature_store.yaml` with Redis at `redis:6379` (the Compose service name) instead of `localhost:6379`; bind-mounted over the real file for containers |
+| `prometheus.yml` | Prometheus scrape config (API, redis-exporter, cAdvisor) |
+| `grafana/` | Auto-provisioned datasource and the "Fraud Detection Platform" dashboard |
 
-Still to add, when the services they belong to are implemented:
-`Dockerfile.consumer` (streaming), `prometheus.yml` (scrape config).
+See the [inference API](../docs/guides/inference-api.md) and [observability](../docs/guides/observability.md) guides.

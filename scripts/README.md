@@ -1,4 +1,3 @@
 # scripts/
 
-One-off operational and data scripts (e.g. dataset download, backfills)
-will live here in later phases. Empty in Phase 1.
+Reserved for one-off operational scripts (dataset download, backfills). Everything the project runs regularly is a `fraud-detection` CLI command or a `make` target instead — see `make help`.

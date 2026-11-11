@@ -1,4 +1,6 @@
-.PHONY: install install-dev lint format typecheck test precommit clean \
+.DEFAULT_GOAL := help
+
+.PHONY: help install install-dev lint format typecheck test precommit clean \
 	ingest validate preprocess train evaluate \
 	kafka-up kafka-down redis-up redis-down infra-up infra-down flink-jar \
 	producer consumer feast-apply materialize flink-worker \
@@ -6,6 +8,23 @@
 	monitoring-up monitoring-down drift-report
 
 PYTHON := python3.11
+
+help:
+	@echo "Fraud Detection MLOps Platform - common tasks"
+	@echo ""
+	@echo "  Setup / quality"
+	@echo "    install  install-dev  lint  format  typecheck  test  precommit  clean"
+	@echo "  Data + models"
+	@echo "    ingest  validate  preprocess  train  evaluate"
+	@echo "  Streaming + features"
+	@echo "    kafka-up  kafka-down  producer  consumer  redis-up  redis-down"
+	@echo "    infra-up  infra-down  flink-jar  feast-apply  materialize  flink-worker"
+	@echo "  Serving"
+	@echo "    api  ready  api-build  api-up  api-down"
+	@echo "  Monitoring"
+	@echo "    monitoring-up  monitoring-down  drift-report"
+	@echo ""
+	@echo "Guides: docs/guides/   Architecture: docs/architecture.md"
 
 # apache-flink (PyFlink) needs setuptools<81 present *before* it builds
 # (apache-beam's setup.py imports pkg_resources) and must be installed
