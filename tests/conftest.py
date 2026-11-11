@@ -8,11 +8,11 @@ import pandas as pd
 import pytest
 
 from fraud_detection.data.preprocessing import preprocess
-from fraud_detection.data.split import stratified_split
+from fraud_detection.data.split import temporal_split
 from fraud_detection.features.feature_pipeline import FeaturePipeline
 
 _ROW_COUNT = 60
-_FRAUD_COUNT = 15  # generous margin so stratified splits never starve a class in tests
+_FRAUD_COUNT = 15  # generous margin so temporal splits never starve a class in tests
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def sample_transactions_df() -> pd.DataFrame:
     without needing the actual PaySim CSV on disk.
     """
     types = (["PAYMENT", "TRANSFER", "CASH_OUT", "CASH_IN", "DEBIT"] * _ROW_COUNT)[:_ROW_COUNT]
-    fraud_flags = [1] * _FRAUD_COUNT + [0] * (_ROW_COUNT - _FRAUD_COUNT)
+    fraud_flags = [1 if i % (_ROW_COUNT // _FRAUD_COUNT) == 0 else 0 for i in range(_ROW_COUNT)]
 
     return pd.DataFrame(
         {
@@ -47,14 +47,14 @@ def sample_transactions_df() -> pd.DataFrame:
 def processed_dir(tmp_path: Path, sample_transactions_df) -> Path:
     """A tiny train/validation/test parquet trio, built the same way
     `fraud-detection preprocess` builds the real ones (features ->
-    preprocess -> stratified split), just on the small synthetic
+    preprocess -> temporal split), just on the small synthetic
     fixture instead of the full PaySim CSV. Used by both tests/models/
     (training/registry) and tests/api/ (serving) — both need a real,
     tiny processed dataset to train a real model against.
     """
     featurized = FeaturePipeline().transform(sample_transactions_df)
     processed = preprocess(featurized)
-    split = stratified_split(processed, random_state=0)
+    split = temporal_split(processed)
 
     directory = tmp_path / "processed"
     directory.mkdir()

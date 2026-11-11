@@ -25,7 +25,7 @@ from fraud_detection.data.reporting import (
     generate_plots,
     render_markdown_report,
 )
-from fraud_detection.data.split import stratified_split
+from fraud_detection.data.split import temporal_split
 from fraud_detection.data.validation import assert_trainable, run_data_quality_checks
 from fraud_detection.features.feast_ops import (
     DEFAULT_FEAST_REPO_PATH,
@@ -175,7 +175,7 @@ def _cmd_preprocess(args: argparse.Namespace) -> int:
     # Engineer features before preprocessing drops account identifiers.
     featurized_df = DEFAULT_FEATURE_PIPELINE.transform(df)
     processed_df = preprocess(featurized_df)
-    split = stratified_split(processed_df)
+    split = temporal_split(processed_df)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -436,7 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.set_defaults(func=_cmd_validate)
 
     preprocess_parser = subparsers.add_parser(
-        "preprocess", help="Feature-engineer, clean, stratified-split, and save the dataset"
+        "preprocess", help="Feature-engineer, clean, time-split, and save the dataset"
     )
     preprocess_parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
     preprocess_parser.add_argument("--output-dir", type=Path, default=DEFAULT_PROCESSED_DIR)

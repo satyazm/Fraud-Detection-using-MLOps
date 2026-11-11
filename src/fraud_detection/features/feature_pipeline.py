@@ -12,7 +12,7 @@ Pipeline order in a full training run:
     ingestion.load_paysim_csv()
         -> FeaturePipeline.transform()          (this module: add engineered columns)
         -> data.preprocessing.preprocess()      (drop identifiers, encode `type`)
-        -> data.split.stratified_split()
+        -> data.split.temporal_split()
 `FeaturePipeline` must run before `data.preprocessing.preprocess()`
 because some features (e.g. `is_dest_merchant`) read `nameDest`, which
 preprocessing drops.
