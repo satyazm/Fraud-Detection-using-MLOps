@@ -4,7 +4,7 @@
 
 **An end-to-end MLOps system for fraud detection: from raw data and experiment tracking, through live Kafka → Flink → Feast features, to a FastAPI scoring service with monitoring, scheduling and Kubernetes deployment.**
 
-[![CI](https://github.com/satyazm/mloops/actions/workflows/ci.yml/badge.svg)](https://github.com/satyazm/mloops/actions/workflows/ci.yml)
+[![CI](https://github.com/satyazm/Fraud-Detection-using-MLOps/actions/workflows/ci.yml/badge.svg)](https://github.com/satyazm/Fraud-Detection-using-MLOps/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Code style](https://img.shields.io/badge/code%20style-black-000000)
